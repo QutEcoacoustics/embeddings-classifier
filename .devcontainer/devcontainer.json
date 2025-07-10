@@ -1,0 +1,35 @@
+{
+  "name": "Python Parquet Processor Dev",
+  "dockerFile": "../Dockerfile",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.pylint", 
+        "ms-python.black-formatter",
+        "ms-python.pytest",
+        "charliermarsh.ruff",
+        "ms-python.mypy-type-checker"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestPath": "pytest",
+        "python.testing.pytestArgs": [
+          "tests/tests"
+        ],
+        "python.testing.unittestEnabled": false,
+        "python.linting.enabled": true,
+        "python.linting.flake8Enabled": true,
+        "python.formatting.provider": "black",
+        "python.formatting.blackArgs": ["--line-length=88"],
+        "files.associations": {
+          "*.py": "python"
+        },
+        "python.analysis.typeCheckingMode": "basic"
+      }
+    }
+  },
+  "forwardPorts": [],
+  "remoteUser": "root"
+}

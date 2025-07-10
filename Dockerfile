@@ -1,6 +1,8 @@
-FROM python:3.11-alpine
+# --- Stage 1: The Builder ---
+# Use a full-featured image to build our dependencies
+FROM python:3.11-alpine AS builder
 
-# Install system dependencies needed for building numpy and pyarrow
+# Install system dependencies needed for building
 RUN apk add --no-cache \
     build-base \
     linux-headers \
@@ -13,28 +15,20 @@ RUN apk add --no-cache \
     cmake \
     pkgconfig
 
-# Upgrade pip and install build tools
-RUN pip install --upgrade pip setuptools wheel
+# Install python packages globally
+RUN pip install --no-cache-dir numpy pyarrow pytest
 
-# Install numpy first (pyarrow depends on it)
-RUN pip install --no-cache-dir numpy
+# --- Stage 2: The Final Production Image ---
+# Start from a minimal, clean alpine image
+FROM python:3.11-alpine
 
-# Install pyarrow
-RUN pip install --no-cache-dir pyarrow
+# Copy the installed python packages from the builder's global site-packages
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 
-# Optional: Install pandas if you need it
-# RUN pip install --no-cache-dir pandas
-
-# Clean up build dependencies to reduce image size
-RUN apk del build-base gcc g++ gfortran cmake && \
-    rm -rf /var/cache/apk/* && \
-    rm -rf /root/.cache/pip/*
-
-# Set working directory
+# Copy your application code and other necessary files
+COPY src/VERSION /VERSION
+COPY . /app
 WORKDIR /app
-
-# Copy your application code
-COPY . .
 
 # Default command
 CMD ["python"]
