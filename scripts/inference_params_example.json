@@ -1,0 +1,11 @@
+[
+    {
+        "filter": {"regions.id": {"eq": 1}},
+        "recognizers": [{
+            "name": "recognizer1",
+            "config_path": "./local_files/recognizer1_config.json",
+        }],
+        "output": "./local_files/inference_results/1"
+        
+    }
+]
