@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from helpers import TestHelpers
+from unit_helpers import UnitTestHelpers
 import app 
 
 class TestUtilityFunctions:
@@ -95,11 +96,11 @@ class TestUtilityFunctions:
     def test_get_parquet_files(self, clean_mounted_dirs):
         """Test getting parquet files from directory."""
         dirs = clean_mounted_dirs
-        input_dir = dirs['mounted_input']
+        input_dir = dirs['workspace_input']
         
         # Create some parquet files
-        TestHelpers.create_sample_parquet(input_dir / 'file1.parquet')
-        TestHelpers.create_sample_parquet(input_dir / 'subdir' / 'file2.parquet')
+        UnitTestHelpers.create_sample_parquet(input_dir / 'file1.parquet')
+        UnitTestHelpers.create_sample_parquet(input_dir / 'subdir' / 'file2.parquet')
         
         # Create a non-parquet file
         (input_dir / 'readme.txt').write_text('test')
@@ -107,6 +108,6 @@ class TestUtilityFunctions:
         parquet_files = app.get_parquet_files(str(input_dir))
         
         assert len(parquet_files) == 2
-        assert any('file1.parquet' in f for f in parquet_files)
-        assert any('file2.parquet' in f for f in parquet_files)
-        assert not any('readme.txt' in f for f in parquet_files)
+        assert any('file1.parquet' in f.name for f in parquet_files)
+        assert any('file2.parquet' in f.name for f in parquet_files)
+        assert not any('readme.txt' in f.name for f in parquet_files)

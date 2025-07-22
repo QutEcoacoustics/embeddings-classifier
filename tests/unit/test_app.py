@@ -7,6 +7,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 sys.path.insert(0, str(Path(__file__).parent))
 
+from helpers import TestHelpers
+
 import app 
 
 
@@ -64,3 +66,4 @@ def test_main_exits_on_unrecognized_argument(monkeypatch):
     
     with pytest.raises(SystemExit):
         app.main()
+

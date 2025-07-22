@@ -12,20 +12,8 @@ import pyarrow.parquet as pq
 import pyarrow.csv as pv
 import pyarrow.compute as pc
 
-class TestHelpers:
+class UnitTestHelpers:
     """Helper functions for test setup and teardown."""
-    
-    @staticmethod
-    def get_test_dirs():
-        """Get the test directory paths."""
-        test_root = Path(__file__).parent.parent
-        return {
-            'files_parquet': test_root / 'files' / 'parquet',
-            'files_config': test_root / 'files' / 'config',
-            'mounted_input': test_root / 'mounted' / 'input',
-            'mounted_config': test_root / 'mounted' / 'config',
-            'mounted_output': test_root / 'mounted' / 'output'
-        }
     
     @staticmethod
     def read_table(file_path: Union[str, Path]):
@@ -52,8 +40,8 @@ class TestHelpers:
         The expected results should be a list of tuples (id, label, score).
         """
 
-        output_data = TestHelpers.read_table(output_table_path).to_pylist()
-        expected_data = TestHelpers.read_table(expected_results_path)
+        output_data = UnitTestHelpers.read_table(output_table_path).to_pylist()
+        expected_data = UnitTestHelpers.read_table(expected_results_path)
 
         # We are checking that for each row in the output table
         # the score matches the 'logits' column in the expected results, for the same 
@@ -98,55 +86,6 @@ class TestHelpers:
             print(output_row)
             
 
-    
-
-    @staticmethod
-    def clean_mounted_directory(directory_path: Path):
-        """Remove all files except .gitkeep from a directory."""
-        if not directory_path.exists():
-            directory_path.mkdir(parents=True, exist_ok=True)
-            return
-        
-        for item in directory_path.iterdir():
-            if item.name != '.gitkeep':
-                if item.is_file():
-                    item.unlink()
-                elif item.is_dir():
-                    shutil.rmtree(item)
-    
-
-    @staticmethod
-    def copy_input(source_file, dest_file = None):
-        """Copy files from source to destination directory."""
-
-        dest_parent = "tests/mounted/input"
-        source_parent = "tests/files/parquet"
-        TestHelpers.copy_test_file(source_parent, dest_parent, source_file, dest_file)
-
-    @staticmethod
-    def copy_config(source_file, dest_file = None):
-        """Copy files from source to destination directory."""
-
-        dest_parent = "tests/mounted/config"
-        source_parent = "tests/files/config"
-        TestHelpers.copy_test_file(source_parent, dest_parent, source_file, dest_file)
-
-
-    @staticmethod
-    def copy_test_file(source_parent, dest_parent, source_file, dest_file = None):
-        """
-        Copy a file from source to destination, ensuring parent directories exist.
-        If dest_file is None, will use the name of the source file.
-        """
-        
-        if dest_file is None:
-            dest_file = Path(source_file).name
-        dest_file = Path(dest_parent) / dest_file
-        source_file = Path(source_parent) / source_file
-        # dest_file might include a subdirectory structure, ensure parent exists
-        dest_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_file, dest_file)
-
     @staticmethod
     def random_source():
         """Generate a random source string for testing."""
@@ -169,7 +108,7 @@ class TestHelpers:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
         np.random.seed(seed)
-        source_array = [TestHelpers.random_source() for _ in range(num_rows)]
+        source_array = [UnitTestHelpers.random_source() for _ in range(num_rows)]
 
         # random offsets: probably not realistic but we want to make it work for non-consecutive offsets
         offset_array = np.random.randint(0, 1000, size=num_rows).astype(np.int32)

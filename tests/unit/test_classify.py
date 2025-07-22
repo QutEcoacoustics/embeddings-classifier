@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from helpers import TestHelpers
+from unit_helpers import UnitTestHelpers
 import app 
 
 
@@ -39,11 +40,9 @@ class TestClassifyFunction:
         
         assert Path(real_data_file['output_path']).exists()
 
-        TestHelpers.compare_predictions(
+        UnitTestHelpers.compare_predictions(
             real_data_file['output_path'],
-            './tests/files/predictions/grtbgw.csv')
-
-
+            './tests/test_data/predictions/grtbgw.csv')
 
     
     def test_single_file_processing(self, sample_data):
@@ -77,33 +76,31 @@ class TestClassifyFunction:
         """Test processing a directory of parquet files."""
         dirs = clean_mounted_dirs
         
-        # Create multiple parquet files in subdirectories
-        input_dir = dirs['mounted_input']
-        config_path = dirs['mounted_config'] / 'test_config.json'
-        output_dir = dirs['mounted_output']
+
+        input_dir = dirs['workspace_input']
+        config_path = dirs['workspace_config'] / 'test_config.json'
+        output_dir = dirs['workspace_output']
         
-        # Create directory structure with parquet files
         (input_dir / 'subdir1').mkdir(parents=True, exist_ok=True)
         (input_dir / 'subdir2').mkdir(parents=True, exist_ok=True)
         
-        TestHelpers.create_sample_parquet(input_dir / 'file1.parquet', num_rows=30)
-        TestHelpers.create_sample_parquet(input_dir / 'subdir1' / 'file2.parquet', num_rows=40)
-        TestHelpers.create_sample_parquet(input_dir / 'subdir2' / 'file3.parquet', num_rows=25)
-        TestHelpers.create_sample_config(config_path)
+        UnitTestHelpers.create_sample_parquet(input_dir / 'file1.parquet', num_rows=30)
+        UnitTestHelpers.create_sample_parquet(input_dir / 'subdir1' / 'file2.parquet', num_rows=40)
+        UnitTestHelpers.create_sample_parquet(input_dir / 'subdir2' / 'file3.parquet', num_rows=25)
+        UnitTestHelpers.create_sample_config(config_path)
     
         app.classify(input_dir, output_dir, config_path)
         
-        # Verify output structure matches input structure
-        assert (output_dir / 'file1.parquet').exists()
-        assert (output_dir / 'subdir1' / 'file2.parquet').exists()
-        assert (output_dir / 'subdir2' / 'file3.parquet').exists()
+        assert (output_dir / 'file1.csv').exists()
+        assert (output_dir / 'subdir1' / 'file2.csv').exists()
+        assert (output_dir / 'subdir2' / 'file3.csv').exists()
         
         for output_file in [
-            output_dir / 'file1.parquet',
-            output_dir / 'subdir1' / 'file2.parquet',
-            output_dir / 'subdir2' / 'file3.parquet'
+            output_dir / 'file1.csv',
+            output_dir / 'subdir1' / 'file2.csv',
+            output_dir / 'subdir2' / 'file3.csv'
         ]:
-            result_table = pq.read_table(output_file)
+            result_table = pv.read_csv(output_file)
             assert 'score' in result_table.column_names
             scores = result_table.column('score').to_numpy()
             assert not np.isnan(scores).any()
@@ -142,12 +139,12 @@ class TestClassifyFunction:
         """Test handling of empty input directory."""
         dirs = clean_mounted_dirs
         
-        input_dir = dirs['mounted_input']
-        config_path = dirs['mounted_config'] / 'test_config.json'
-        output_dir = dirs['mounted_output']
+        input_dir = dirs['workspace_input']
+        config_path = dirs['workspace_config'] / 'test_config.json'
+        output_dir = dirs['workspace_output']
         
         # Create config but no parquet files
-        TestHelpers.create_sample_config(config_path)
+        UnitTestHelpers.create_sample_config(config_path)
         
         with pytest.raises(SystemExit) as exc_info:
             app.classify(input_dir, output_dir, config_path)
@@ -159,14 +156,14 @@ class TestClassifyFunction:
         dirs = clean_mounted_dirs
         
         # Create parquet with different number of features
-        parquet_path = dirs['mounted_input'] / 'test_data.parquet'
-        TestHelpers.create_sample_parquet(parquet_path, num_rows=30, num_features=500)  
+        parquet_path = dirs['workspace_input'] / 'test_data.parquet'
+        UnitTestHelpers.create_sample_parquet(parquet_path, num_rows=30, num_features=500)  
         
         # Create config with 1280 features
-        config_path = dirs['mounted_config'] / 'test_config.json'
-        TestHelpers.create_sample_config(config_path, num_features=1280)
+        config_path = dirs['workspace_config'] / 'test_config.json'
+        UnitTestHelpers.create_sample_config(config_path, num_features=1280)
         
-        output_path = dirs['mounted_output'] / 'output.parquet'
+        output_path = dirs['workspace_output'] / 'output.parquet'
         
         with pytest.raises(SystemExit) as exc_info:
             app.classify(parquet_path, output_path, config_path)
@@ -178,7 +175,8 @@ class TestClassifyFunction:
 
 
     test_cases = [
-        ('3757025.parquet', 'config1.json')
+        ('3757025.parquet', 'config1.json'),
+        ('3757025.parquet', 'config_classifier_only.json')
     ]
 
     @pytest.mark.parametrize('real_data_file', test_cases, indirect=True)
@@ -205,14 +203,14 @@ class TestClassifyFunction:
         TestHelpers.copy_input('3757025.parquet', Path('group_a') / 'real_file_2.parquet')
         
         dirs = TestHelpers.get_test_dirs()
-        input_dir = dirs['mounted_input']
-        output_dir = dirs['mounted_output']
-        config_path = dirs['mounted_config'] / 'config1.json'
+        input_dir = dirs['workspace_input']
+        output_dir = dirs['workspace_output']
+        config_path = dirs['workspace_config'] / 'config1.json'
   
         app.classify(input_dir, output_dir, config_path)
         
-        assert (output_dir / '3757025.parquet').exists()
-        assert (output_dir / 'group_a' / 'real_file_2.parquet').exists()
+        assert (output_dir / '3757025.csv').exists()
+        assert (output_dir / 'group_a' / 'real_file_2.csv').exists()
 
 
 

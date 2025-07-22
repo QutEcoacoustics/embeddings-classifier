@@ -55,13 +55,24 @@ def parse_arguments():
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load and validate configuration file."""
+
     try:
+
         with open(config_path, 'r') as f:
             config = json.load(f)
         
         # Validate required fields
         if 'classifier' not in config:
-            raise ValueError("Config must contain 'classifier' section")
+
+            # assume that the entire json is the classifier, and use defaults for # threshold and save_empty
+            if 'classes' not in config:
+                raise ValueError("Config must contain 'classifier' section")
+            
+            config = {
+                'classifier': config,
+                'threshold': 0.0,
+                'save_empty': True
+            }
         
         classifier = config['classifier']
         required_fields = ['classes', 'beta', 'beta_bias']
@@ -259,7 +270,7 @@ def classify(input_path, output_path, config_path):
         for file_path in parquet_files:
             # Calculate relative path from input directory and construct output path
             rel_path = file_path.relative_to(input_path)
-            output_file_path = output_path / rel_path
+            output_file_path = output_path / rel_path.with_suffix('.csv') 
 
             success = process_single_file(
                 file_path, output_file_path, beta, beta_bias, 
@@ -309,24 +320,19 @@ def get_paths(args):
     """
     Return default paths for input, output, and config based on whether running in a container.
     """
-    if using_container():
-        default_paths = {
-            'input': '/mnt/input',
-            'output': '/mnt/output',
-            'config': '/mnt/config'
-        }
-    else:
-        default_paths = {
-            'input': 'tests/mounted/input',
-            'output': 'tests/mounted/output',
-            'config': 'tests/mounted/config'
-        }
+
+    default_paths = {
+        'input': '/mnt/input',
+        'output': '/mnt/output',
+        'config': '/mnt/config'
+    }
 
     input_path = args.input if args.input else default_paths['input']
     output_path = args.output if args.output else default_paths['output']
-    config_path = args.config if args.config else Path(default_paths['config'])/ 'config.json'
+    config_path = args.config if args.config else Path(default_paths['config']) / 'config.json'
 
     return Path(input_path), Path(output_path), Path(config_path)
+
 
 def main():
     """Parses arguments and calls the appropriate function."""

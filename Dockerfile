@@ -31,4 +31,6 @@ COPY . /app
 WORKDIR /app
 
 # Default command
-CMD ["python"]
+ENTRYPOINT ["python", "src/app.py"]
+
+CMD ["classify"]
