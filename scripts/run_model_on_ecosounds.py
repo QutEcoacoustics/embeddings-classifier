@@ -4,6 +4,7 @@ from pathlib import Path
 import time
 from collections import deque
 import logging
+import logging.handlers
 
 import pandas as pd
 
@@ -157,25 +158,46 @@ def process_file(file, recognizers, output_path, timing_store):
 
 
 def setup_logging(output_dir):
-
+    # Ensure the output directory exists for the log file
+    output_dir.mkdir(parents=True, exist_ok=True)
     log_file_path = output_dir / "processing_log.log"
+
+    # Remove any existing handlers to prevent duplicate logs if called multiple times
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler(log_file_path),
-            logging.StreamHandler()  # Log to console as well
-        ]
+
+    # Configure the root logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO) # Set the minimum level for all handlers
+
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+    # 1. RotatingFileHandler for size-based rotation
+    # maxBytes: The maximum size of the log file in bytes before it rotates.
+    #           10 * 1024 * 1024 = 10 MB
+    # backupCount: The number of backup log files to keep.
+    file_handler = logging.handlers.RotatingFileHandler(
+        filename=log_file_path,
+        maxBytes=20 * 1024 * 1024, # 10 MB per file
+        backupCount=1000,             # Keep the 100 most recent log files
+        encoding='utf-8'
     )
-    # storing timing information to calculate rolling averages
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    # 2. StreamHandler for console output
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    # Storing timing information for rolling averages
     timing_store = {
         'download_times': deque(maxlen=10),  # Store last 10 download times
         'container_run_times': deque(maxlen=10)  # Store last 10 container run times
     }
 
     return timing_store
+
 
 def main(params_path, limit=-1):
 
@@ -189,7 +211,7 @@ def main(params_path, limit=-1):
     if isinstance(params, dict):
         params = [params]
 
-    for run in params:
+    for i, run in enumerate(params):
         output_dir = Path(run['output'])
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -199,14 +221,14 @@ def main(params_path, limit=-1):
 
         filelist = get_filelist(run['filter'], filelist_path)
 
-        print(len(filelist), "files found")
+        logging.info(f"{len(filelist)} files found")
 
         if limit > 0:
             logging.info(f"Limiting to {limit} files out of {len(filelist)} total.")
             filelist = filelist[:limit]  # Limit the number of files for testing
 
         for i, file in enumerate(filelist):
-            logging.info(f"--- Processing file {i+1}/{len(filelist)} (ID: {file['id']}) ---")
+            logging.info(f"--- Processing file {i+1}/{len(filelist)} (ID: {file['id']}) for run {i+1}/{len(params)} ---")
             process_file(file, run['recognizers'], run['output'], timing_store=timing_store)
 
 
