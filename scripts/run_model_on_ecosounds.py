@@ -1,3 +1,5 @@
+import concurrent.futures
+import os
 import argparse
 import json
 from pathlib import Path
@@ -199,11 +201,17 @@ def setup_logging(output_dir):
     return timing_store
 
 
-def main(params_path, limit=-1):
+def main(params_path, limit=-1, workers=None):
+    # Use a sensible default for the number of workers if not specified
+    if workers is None:
+        # os.cpu_count() gives the number of CPUs, which is a good starting point
+        workers = os.cpu_count() or 1
+        workers = min(workers, 10)  # Limit to a maximum of 10 workers to not overload the server
+
+    logging.info(f"Using a maximum of {workers} parallel workers.")
 
     global api
     api = baw_api()
-
 
     with open(params_path, "r") as f:
         params = json.load(f)
@@ -211,34 +219,52 @@ def main(params_path, limit=-1):
     if isinstance(params, dict):
         params = [params]
 
-    for i, run in enumerate(params):
+    for run_index, run in enumerate(params):
         output_dir = Path(run['output'])
-        output_dir.mkdir(parents=True, exist_ok=True)
-
         timing_store = setup_logging(output_dir)
 
-        filelist_path = Path(run['output']) / "filelist.json"
+        logging.info(f"--- Starting run {run_index + 1}/{len(params)} with output to {output_dir} ---")
 
+        filelist_path = output_dir / "filelist.json"
         filelist = get_filelist(run['filter'], filelist_path)
 
         logging.info(f"{len(filelist)} files found")
 
         if limit > 0:
             logging.info(f"Limiting to {limit} files out of {len(filelist)} total.")
-            filelist = filelist[:limit]  # Limit the number of files for testing
+            filelist = filelist[:limit]
 
-        for i, file in enumerate(filelist):
-            logging.info(f"--- Processing file {i+1}/{len(filelist)} (ID: {file['id']}) for run {i+1}/{len(params)} ---")
-            process_file(file, run['recognizers'], run['output'], timing_store=timing_store)
+        # This is the main change: replacing the for loop with a ThreadPoolExecutor
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            # Create a dictionary to map futures to their file info for logging
+            future_to_file = {
+                executor.submit(process_file, file, run['recognizers'], run['output'], timing_store): file
+                for file in filelist
+            }
+
+            processed_count = 0
+            total_files = len(filelist)
+            for future in concurrent.futures.as_completed(future_to_file):
+                file_info = future_to_file[future]
+                processed_count += 1
+                try:
+                    # .result() will re-raise any exception caught in the thread
+                    future.result()
+                    logging.info(f"({processed_count}/{total_files}) Successfully processed file ID: {file_info['id']}")
+                except Exception as exc:
+                    logging.error(f"({processed_count}/{total_files}) File ID {file_info['id']} generated an exception: {exc}", exc_info=True)
 
 
 if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser(description="Run model on ecosounds data.")
+    parser = argparse.ArgumentParser(description="Run model on ecosounds data in parallel.")
     parser.add_argument("--params", type=Path, required=True, help="Path to JSON params for running on ecosounds data")
     parser.add_argument("--limit", type=int, default=-1, help="Limit the number of files to process.")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of parallel workers to use. Defaults to the number of CPU cores."
+    )
     args = parser.parse_args()
 
-    main(args.params, args.limit)
-
-
+    main(args.params, args.limit, args.workers)
