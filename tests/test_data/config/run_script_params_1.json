@@ -1,0 +1,8 @@
+{
+    "filter": {"regions.id": {"eq": 116}},
+    "recognizers": {
+        "gbm_powerful_owl_03": "/gbm_powerful_owl_03.json"
+    },
+    "output": "./local_files/inference_results/116"
+    
+}

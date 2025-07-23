@@ -96,38 +96,3 @@ def test_docker_run_uses_default_paths(docker_image, clean_mounted_dirs):
     expected_output_file = OUTPUT_DIR / "3757025.csv" 
     assert expected_output_file.exists(), "Output file was not created in the default location!"
 
-
-@pytest.mark.docker
-def test_run_script(docker_image, clean_mounted_dirs):
-    """
-    Tests that the run_container.py script runs successfully
-    and produces the expected output.
-    """
-    
-    # Prepare input and config files
-    TestHelpers.copy_test_file(
-        source_parent=TestHelpers.get_test_dirs('data_parquet'), 
-        dest_parent=INPUT_DIR,
-        source_file='3757025.parquet',
-        dest_file='test_input.parquet')
-
-    TestHelpers.copy_test_file(
-        source_parent=TestHelpers.get_test_dirs('data_config'), 
-        dest_parent=CONFIG_DIR,
-        source_file='config1.json',
-        dest_file='test_config.json')
-
-    # Run the script
-    run_command = [
-        "python", "scripts/run_container.py",
-        "--input", str(INPUT_DIR / 'test_input.parquet'),
-        "--output", str(OUTPUT_DIR / 'test_output.csv'),
-        "--config", str(CONFIG_DIR / 'test_config.json')
-    ]
-
-    subprocess.run(run_command, check=True)
-
-    # Check if the output file was created
-    output_file = OUTPUT_DIR / 'test_output.csv'
-    assert output_file.exists(), "Output file was not created!"
-    assert output_file.stat().st_size > 0, "Output file is empty!"

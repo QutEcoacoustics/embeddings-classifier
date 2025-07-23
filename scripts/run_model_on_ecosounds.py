@@ -12,15 +12,7 @@ from recognizer_workshop import baw_helpers
 
 from run_container import run_docker_container
 
-
-
-
-
-
-
-
-api = baw_api()
-
+api = None
 
 def safe_name(name, id):
     """
@@ -184,6 +176,10 @@ def setup_logging(output_dir):
     return timing_store
 
 def main(params_path, limit=-1):
+
+    global api
+    api = baw_api()
+
 
     with open(params_path, "r") as f:
         params = json.load(f)

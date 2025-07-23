@@ -70,13 +70,15 @@ def clean_mounted_dirs():
     TestHelpers.clean_mounted_directory(dirs['workspace_input'])
     TestHelpers.clean_mounted_directory(dirs['workspace_config'])
     TestHelpers.clean_mounted_directory(dirs['workspace_output'])
+    TestHelpers.clean_mounted_directory(dirs['workspace_host'])
     
     yield dirs
     
-    # Clean after test (optional, but good practice)
+    # clean after test
     TestHelpers.clean_mounted_directory(dirs['workspace_input'])
     TestHelpers.clean_mounted_directory(dirs['workspace_config'])
     TestHelpers.clean_mounted_directory(dirs['workspace_output'])
+    TestHelpers.clean_mounted_directory(dirs['workspace_host'])
 
 
 

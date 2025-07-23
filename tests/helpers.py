@@ -22,7 +22,8 @@ class TestHelpers:
             'data_output': test_root / 'test_data' / 'output',
             'workspace_input': test_root / 'workspace' / 'input',
             'workspace_config': test_root / 'workspace' / 'config',
-            'workspace_output': test_root / 'workspace' / 'output'
+            'workspace_output': test_root / 'workspace' / 'output',
+            'workspace_host': test_root / 'workspace' / 'host_workspace'
         }
     
         if folder:
