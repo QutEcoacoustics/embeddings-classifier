@@ -1,14 +1,20 @@
+import argparse
 import json
 from pathlib import Path
+import time
+from collections import deque
+import logging
+
+import pandas as pd
 
 from recognizer_workshop.baw_api import baw_api
 from recognizer_workshop import baw_helpers
 
 from run_container import run_docker_container
 
-import pandas as pd
 
-import argparse
+
+
 
 
 
@@ -33,7 +39,7 @@ def get_filelist(baw_filter, filelist_path):
     if filelist_path.exists():
         with open(filelist_path, "r") as f:
             filelist = json.load(f)
-        print(f"Filelist read from {filelist_path}")
+        logging.info(f"Filelist read from cache: {filelist_path}")
         return filelist
 
     payload = {
@@ -58,13 +64,19 @@ def get_filelist(baw_filter, filelist_path):
     with open(filelist_path, "w") as f:
         json.dump(filelist, f, indent=4)
         f.write("\n")
-        print(f"Filelist written to {filelist_path}")
-        print(f"Number of files: {len(filelist)}")
+        logging.info(f"Filelist fetched from API and written to {filelist_path}")
+        logging.info(f"Number of files: {len(filelist)}")
 
     return filelist
 
 
-def get_parquet(arid, destination_filename):
+def get_parquet(arid, destination_filename, timing_store):
+
+    if destination_filename.exists():
+        logging.info(f"Parquet file already exists for {arid}, skipping download.")
+        return True
+
+    start_time = time.perf_counter()
 
     result = baw_helpers.get_embeddings(
         baw_api=api,
@@ -72,30 +84,58 @@ def get_parquet(arid, destination_filename):
         audio_recording_id=arid,
         destination_file=destination_filename)
     
+    download_duration = time.perf_counter() - start_time
+    timing_store['download_times'].append(download_duration)
+    avg_download_time = sum(timing_store['download_times']) / len(timing_store['download_times'])
+
+    if result:
+        logging.info(
+            f"Downloaded {arid} to {destination_filename} in {download_duration:.2f}s "
+            f"(rolling 10-average: {avg_download_time:.2f}s)"
+        )
+    else:
+        logging.error(f"Failed to download parquet for {arid} to {destination_filename}")
+    
     return result
 
 
-def process_file(file, recognizer_name, config_path, output_path):
+def process_file(file, recognizers, output_path, timing_store):
+
 
     parquet_path = Path(output_path) / 'parquet_temp' / f"{file['id']}.parquet"
-    site_output_path = Path(output_path) / 'outputs' / recognizer_name / safe_name(file['sites.name'], file['id'])
-    results_path = site_output_path / parquet_path.with_suffix('.csv').name
+         
 
-    if results_path.exists():
-        print(f"Results already exist for {file['id']}, skipping...")
-        return
-   
-    result = get_parquet(file['id'], parquet_path)
+    for recognizer_name, config_path in recognizers.items():
+        logging.info(f"Using recognizer: {recognizer_name}")
 
-    if result:
-        print(f"Successfully downloaded {file['id']} to {parquet_path}")
+        recognizer_output_path = Path(output_path) / 'outputs' / recognizer_name
+        site_output_path = recognizer_output_path / safe_name(file['sites.name'], file['id'])
+        results_path = site_output_path / parquet_path.with_suffix('.csv').name
+        site_output_path.mkdir(parents=True, exist_ok=True)
 
+        if results_path.exists():
+            logging.info(f"Results already exist for {file['id']} with recognizer {recognizer_name}, skipping...")
+            continue
+
+        download_successful = get_parquet(file['id'], parquet_path, timing_store)
+        if not download_successful:
+            logging.error(f"Download failed for {file['id']}. Skipping processing this file")
+            return
+
+        # --- Time Container Run ---
+        start_time = time.perf_counter()
         run_docker_container(
             input_file_path=parquet_path,
             output_folder_path=site_output_path,
             config_file_path=Path(config_path)
         )
-
+        container_duration = time.perf_counter() - start_time
+        timing_store['container_run_times'].append(container_duration)
+        avg_container_time = sum(timing_store['container_run_times']) / len(timing_store['container_run_times'])
+        logging.info(
+            f"Container for {file['id']} finished in {container_duration:.2f}s "
+            f"(rolling 10-average: {avg_container_time:.2f}s)"
+        )
         # read results csv and add metadata columns
 
         if results_path.exists():
@@ -107,18 +147,41 @@ def process_file(file, recognizer_name, config_path, output_path):
 
             # save
             df.to_csv(results_path, index=False)
-            print(f"Results saved to {results_path}")
+            logging.info(f"Results saved to {results_path}")
         else:
-            print(f"Failed to produce results for {file['id']}, file not found at {results_path}")
+            logging.error(f"Failed to produce results for {file['id']}, file not found at {results_path}")
+    
+    try:
+        if parquet_path.exists():
+            logging.info(f"Deleting temporary parquet file: {parquet_path}")
+            parquet_path.unlink()
+    except OSError as e:
+        logging.error(f"Error deleting file {parquet_path}: {e}")
+
             
-            
+        
 
 
+def setup_logging(output_dir):
 
+    log_file_path = output_dir / "processing_log.log"
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(log_file_path),
+            logging.StreamHandler()  # Log to console as well
+        ]
+    )
+    # storing timing information to calculate rolling averages
+    timing_store = {
+        'download_times': deque(maxlen=10),  # Store last 10 download times
+        'container_run_times': deque(maxlen=10)  # Store last 10 container run times
+    }
 
-
-
-
+    return timing_store
 
 def main(params_path, limit=-1):
 
@@ -129,7 +192,11 @@ def main(params_path, limit=-1):
         params = [params]
 
     for run in params:
-    
+        output_dir = Path(run['output'])
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        timing_store = setup_logging(output_dir)
+
         filelist_path = Path(run['output']) / "filelist.json"
 
         filelist = get_filelist(run['filter'], filelist_path)
@@ -137,14 +204,12 @@ def main(params_path, limit=-1):
         print(len(filelist), "files found")
 
         if limit > 0:
-            print(f"Limiting to {limit} files")
+            logging.info(f"Limiting to {limit} files out of {len(filelist)} total.")
             filelist = filelist[:limit]  # Limit the number of files for testing
 
         for i, file in enumerate(filelist):
-
-            for recognizer in run['recognizers']:
-
-                process_file(file, recognizer['name'], recognizer['config_path'], run['output'])
+            logging.info(f"--- Processing file {i+1}/{len(filelist)} (ID: {file['id']}) ---")
+            process_file(file, run['recognizers'], run['output'], timing_store=timing_store)
 
 
 if __name__ == "__main__":
