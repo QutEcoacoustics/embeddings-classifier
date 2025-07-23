@@ -100,11 +100,8 @@ def run_docker_container(
 
     stdout, stderr = sys_command(docker_command)
 
-    if stderr:
-        # Don't sys.exit here, let the caller handle it. Raise an exception instead.
-        raise RuntimeError(f"Error occurred while running container:\n{stderr}")
-
-    print(f"Container output:\n{stdout}")
+    print(f"Container stderr output:\n{stderr}")
+    print(f"Container stdout output:\n{stdout}")
     print(f"--- Container run finished ---")
 
     return stdout, stderr

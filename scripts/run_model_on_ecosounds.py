@@ -27,6 +27,8 @@ def safe_name(name, id):
 
 
 def get_filelist(baw_filter, filelist_path):
+
+    logging.info(f"Fetching filelist with filter: {baw_filter}")
     
     if filelist_path.exists():
         with open(filelist_path, "r") as f:

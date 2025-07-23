@@ -1,1 +1,2 @@
 git+https://github.com/qutecoacoustics/recognizer-workshop.git#egg=recognizer-workshop
+pandas
