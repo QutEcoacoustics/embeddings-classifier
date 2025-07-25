@@ -1,4 +1,4 @@
-# Linear Model Runner
+# Embeddings Classifier
 
 Container to run linear model with embeddings input and classification output using json config to load model weights
 
@@ -39,7 +39,7 @@ By default, it will classify all parquet files in `/mnt/input ` the input folder
 A configuration json file must be supplied. 
 The configuration file contains:
 
-- classifier: the linear model, including 
+- classifier: the model, including 
   - the list of classes, 
   - the beta (weights per class)
     - this is am ascii base64 encoded numpy array of shape (num_classes, embedding_size) 
