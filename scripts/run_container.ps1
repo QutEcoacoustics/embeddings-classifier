@@ -3,7 +3,7 @@
 #
 param(
     [Parameter(Mandatory=$true)]
-    [string]$input, # Can be a single file or a directory
+    [string]$InputPath, # Renamed from $input to avoid conflict with PowerShell's automatic variable
 
     [Parameter(Mandatory=$true)]
     [string]$OutputFolder,
@@ -19,16 +19,12 @@ $ErrorActionPreference = "Stop"
 
 try {
     # --- Prepare and Validate Paths ---
-    # Resolve paths to their absolute form
-    $InputAbs = (Resolve-Path -Path $input).Path
-    $ConfigFileAbs = (Resolve-Path -Path $ConfigFile).Path
-    $OutputFolderAbs = (Resolve-Path -Path (Join-Path -Path (Get-Location) -ChildPath $OutputFolder) -ErrorAction SilentlyContinue).Path
+    # This robustly gets the absolute paths for the provided arguments.
+    $InputAbs = Resolve-Path -Path $InputPath # Using the renamed variable
+    $ConfigFileAbs = Resolve-Path -Path $ConfigFile
+    $OutputFolderAbs = Convert-Path -Path $OutputFolder
 
-    if (-not $OutputFolderAbs) {
-        $OutputFolderAbs = (Join-Path -Path (Get-Location).Path -ChildPath $OutputFolder)
-    }
-
-    # Validate that the input path and config file exist
+    # --- Path Validation ---
     if (-not (Test-Path -Path $InputAbs)) {
         throw "Error: Input path not found at '$InputAbs'"
     }
@@ -51,13 +47,11 @@ try {
     # --- Determine Input Volume Mount ---
     $inputVolumeMount = ""
     if (Test-Path -Path $InputAbs -PathType Leaf) {
-        # Input is a FILE
         $InputFileName = [System.IO.Path]::GetFileName($InputAbs)
         $inputVolumeMount = "${InputAbs}:/mnt/input/${InputFileName}"
         Write-Host "Input is a file. Mounting as: $inputVolumeMount"
     }
     else {
-        # Input is a FOLDER
         $inputVolumeMount = "${InputAbs}:/mnt/input"
         Write-Host "Input is a folder. Mounting as: $inputVolumeMount"
     }
@@ -66,7 +60,6 @@ try {
     # --- Execute Docker Command ---
     Write-Host "Executing Docker command..."
 
-    # Use splatting for cleaner command arguments
     $dockerArgs = @(
         "run", "--rm",
         "-v", $inputVolumeMount,
@@ -75,7 +68,6 @@ try {
         $Image
     )
     
-    # Execute docker with the arguments
     docker @dockerArgs
 
     Write-Host "--- Container run finished ---"
