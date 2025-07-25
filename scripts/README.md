@@ -14,7 +14,7 @@ Go to https://github.com/QutEcoacoustics/perch-runner/tree/main/scripts and foll
 If you followed the instructions on perch-runner scripts to embed audio, you will have embeddings and have docker installed. 
 
 Right click on the link and choose "save link as"
-<a href="https://raw.githubusercontent.com/QutEcoacoustics/lmr/main/scripts/run_container.ps1" download>run_container.ps1</a>
+<a href="https://raw.githubusercontent.com/QutEcoacoustics/embeddings-classifier/main/scripts/run_container.ps1" download>run_container.ps1</a>
 
 
 ### Step 3. Run the recognizer
