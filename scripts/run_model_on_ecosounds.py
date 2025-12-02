@@ -15,6 +15,8 @@ from recognizer_workshop import baw_helpers
 
 from run_container import run_docker_container
 
+DEFAULT_DOCKER_IMAGE = "crane-linear-model-runner:1.0.0"
+
 api = None
 
 def safe_name(name, id):
@@ -96,22 +98,33 @@ def get_parquet(arid, destination_filename, timing_store):
     return result
 
 
-def process_file(file, recognizers, output_path, timing_store):
+def results_exist(site_output_path):
+
+    pattern = site_output_path.replace('<classifier_name>', '*') / '*.csv'
+    results_files = list(site_output_path.rglob(pattern))
+    return len(results_files) > 0
+
+
+def process_file(file, recognizer_configs, output_path, timing_store, docker_image):
 
 
     parquet_path = Path(output_path) / 'parquet_temp' / f"{file['id']}.parquet"
          
 
-    for recognizer_name, config_path in recognizers.items():
-        logging.info(f"Using recognizer: {recognizer_name}")
+    for recognizer_config in recognizer_configs:
 
-        recognizer_output_path = Path(output_path) / 'outputs' / recognizer_name
-        site_output_path = recognizer_output_path / safe_name(file['sites.name'], file['id'])
+        config_path = recognizer_config['config']
+        relative_output = recognizer_config['output']
+        full_output_path = Path(output_path) / relative_output
+
+        logging.info(f"Using recognizer: {recognizer_config['name']}, config: {config_path}, output: {full_output_path}")
+
+        site_output_path = full_output_path / safe_name(file['sites.name'], file['id'])
         results_path = site_output_path / parquet_path.with_suffix('.csv').name
         site_output_path.mkdir(parents=True, exist_ok=True)
 
         if results_path.exists():
-            logging.info(f"Results already exist for {file['id']} with recognizer {recognizer_name}, skipping...")
+            logging.info(f"Results already exist for {file['id']} with recognizer config {config_path}, skipping...")
             continue
 
         download_successful = get_parquet(file['id'], parquet_path, timing_store)
@@ -124,7 +137,8 @@ def process_file(file, recognizers, output_path, timing_store):
         run_docker_container(
             input_file_path=parquet_path,
             output_folder_path=site_output_path,
-            config_file_path=Path(config_path)
+            config_file_path=Path(config_path),
+            docker_image=docker_image,
         )
         container_duration = time.perf_counter() - start_time
         timing_store['container_run_times'].append(container_duration)
@@ -201,7 +215,7 @@ def setup_logging(output_dir):
     return timing_store
 
 
-def main(params_path, limit=-1, workers=None):
+def main(params_path, limit=-1, workers=None, docker_image=DEFAULT_DOCKER_IMAGE):
     # Use a sensible default for the number of workers if not specified
     if workers is None:
         # os.cpu_count() gives the number of CPUs, which is a good starting point
@@ -225,6 +239,7 @@ def main(params_path, limit=-1, workers=None):
 
         logging.info(f"--- Starting run {run_index + 1}/{len(params)} with output to {output_dir} ---")
 
+        # TODO: put hash of filter in filelist name
         filelist_path = output_dir / "filelist.json"
         filelist = get_filelist(run['filter'], filelist_path)
 
@@ -238,7 +253,7 @@ def main(params_path, limit=-1, workers=None):
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             # Create a dictionary to map futures to their file info for logging
             future_to_file = {
-                executor.submit(process_file, file, run['recognizers'], run['output'], timing_store): file
+                executor.submit(process_file, file, run['recognizer_configs'], run['output'], timing_store, docker_image): file
                 for file in filelist
             }
 
@@ -259,6 +274,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run model on ecosounds data in parallel.")
     parser.add_argument("--params", type=Path, required=True, help="Path to JSON params for running on ecosounds data")
     parser.add_argument("--limit", type=int, default=-1, help="Limit the number of files to process.")
+    parser.add_argument("--docker_image", type=str, default=DEFAULT_DOCKER_IMAGE, help="Docker image to use for processing.")
     parser.add_argument(
         "--workers",
         type=int,
@@ -267,4 +283,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    main(args.params, args.limit, args.workers)
+    main(args.params, args.limit, args.workers, args.docker_image)

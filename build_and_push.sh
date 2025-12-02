@@ -2,7 +2,7 @@
 
 DOCKERHUB_USERNAME="qutecoacoustics"
 IMAGE_NAME="crane-linear-model-runner"
-IMAGE_VERSION="1.0.0"
+IMAGE_VERSION="1.0.1"
 DOCKERFILE_PATH="./Dockerfile"
 BUILD_CONTEXT_PATH="." # This is typically '.' for the current directory
 
@@ -34,6 +34,7 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "Successfully built and pushed multi-platform image ${FULL_IMAGE_TAG} to Docker Hub."
     echo "This image now supports both linux/amd64 (for your WSL) and linux/arm64 (for your Mac)."
+    docker pull "${FULL_IMAGE_TAG}"
 else
     echo ""
     echo "ERROR: Docker image build or push failed for multi-platform image."

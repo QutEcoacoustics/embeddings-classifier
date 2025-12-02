@@ -19,12 +19,15 @@ class TestUtilityFunctions:
     
     def test_load_config_valid(self, sample_data):
         """Test loading valid configuration."""
-        config = app.load_config(sample_data['config_path'])
-        
-        assert 'classifier' in config
-        assert 'classes' in config['classifier']
-        assert 'beta' in config['classifier']
-        assert 'beta_bias' in config['classifier']
+        config_list = app.load_config(sample_data['config_path'])
+
+        assert isinstance(config_list, list)
+
+        for config in config_list:
+            assert 'classifier' in config
+            assert 'classes' in config['classifier']
+            assert 'beta' in config['classifier']
+            assert 'beta_bias' in config['classifier']
     
     def test_load_config_invalid_json(self, tmp_path):
         """Test loading invalid JSON configuration."""
@@ -66,7 +69,7 @@ class TestUtilityFunctions:
     def test_deserialize_classifier_params(self, sample_data):
         """Test deserializing classifier parameters."""
         config = app.load_config(sample_data['config_path'])
-        beta, beta_bias = app.deserialize_classifier_params(config['classifier'])
+        beta, beta_bias = app.deserialize_classifier_params(config[0]['classifier'])
         
         assert isinstance(beta, np.ndarray)
         assert isinstance(beta_bias, np.ndarray)
@@ -89,7 +92,7 @@ class TestUtilityFunctions:
         config = app.load_config(str(config_path))
         
         with pytest.raises(SystemExit) as exc_info:
-            app.deserialize_classifier_params(config['classifier'])
+            app.deserialize_classifier_params(config[0]['classifier'])
         assert exc_info.value.code == 1
     
 

@@ -25,23 +25,49 @@ import app
 class TestClassifyFunction:
     """Test cases for the main function."""
 
-    grtbgw_inputs = [('20230324T090000+1100_Kl9_3372829.wav.parquet', 'grtbgw.json')]
+    # grtbgw_inputs = [('20230324T090000+1100_Kl9_3372829.wav.parquet', 'grtbgw.json')]
 
-    @pytest.mark.parametrize('real_data_file', grtbgw_inputs, indirect=True)
-    def test_real_file_processing(self, real_data_file):
+    # @pytest.mark.parametrize('real_data_file', grtbgw_inputs, indirect=True)
+    # def test_real_file_processing(self, real_data_file):
+    #     """
+    #     Tests single file processing using a parametrized fixture to run
+    #     multiple file combinations through the same test logic.
+    #     """
+                
+    #     app.classify(real_data_file['input_path'], 
+    #                  real_data_file['output_path'], 
+    #                  real_data_file['config_path'])
+        
+    #     assert Path(real_data_file['output_path']).exists()
+
+    #     UnitTestHelpers.compare_predictions(
+    #         real_data_file['output_path'],
+    #         './tests/test_data/predictions/grtbgw.csv')
+        
+
+
+    def test_real_file_processing(self, clean_mounted_dirs):
         """
         Tests single file processing using a parametrized fixture to run
         multiple file combinations through the same test logic.
         """
-                
-        app.classify(real_data_file['input_path'], 
-                     real_data_file['output_path'], 
-                     real_data_file['config_path'])
+
+        dirs = clean_mounted_dirs
+
+        input_file = TestHelpers.copy_input('20230324T090000+1100_Kl9_3372829.wav.parquet')
+        config_file = TestHelpers.copy_config('grtbgw.json')
+
+
+        app.classify(input_file, 
+                     dirs['workspace_output'], 
+                     config_file)
         
-        assert Path(real_data_file['output_path']).exists()
+        expected_output_file = dirs['workspace_output'] / 'classifier_0' / '20230324T090000+1100_Kl9_3372829.wav.csv'
+        
+        assert Path(expected_output_file).exists()
 
         UnitTestHelpers.compare_predictions(
-            real_data_file['output_path'],
+            expected_output_file,
             './tests/test_data/predictions/grtbgw.csv')
 
     
@@ -50,14 +76,15 @@ class TestClassifyFunction:
         input_path = Path(sample_data['parquet_path'])
         output_path = Path(sample_data['output_dir']) / 'output.parquet'
         config_path = Path(sample_data['config_path'])
-        
+        expected_output_path = Path(sample_data['output_dir']) / 'classifier_0' / 'output.parquet'
+
         app.classify(input_path, output_path, config_path)
         
         # Verify output file exists
-        assert os.path.exists(output_path)
+        assert os.path.exists(expected_output_path)
         
         # Load and verify output using PyArrow
-        result_table = pq.read_table(output_path)
+        result_table = pq.read_table(expected_output_path)
         
         # Check structure
         assert 'score' in result_table.column_names
@@ -90,17 +117,16 @@ class TestClassifyFunction:
         UnitTestHelpers.create_sample_config(config_path)
     
         app.classify(input_dir, output_dir, config_path)
-        
-        assert (output_dir / 'file1.csv').exists()
-        assert (output_dir / 'subdir1' / 'file2.csv').exists()
-        assert (output_dir / 'subdir2' / 'file3.csv').exists()
-        
-        for output_file in [
-            output_dir / 'file1.csv',
-            output_dir / 'subdir1' / 'file2.csv',
-            output_dir / 'subdir2' / 'file3.csv'
-        ]:
-            result_table = pv.read_csv(output_file)
+
+        expected_output_files = [
+            output_dir / 'classifier_0' / 'file1.csv',
+            output_dir / 'classifier_0' / 'subdir1' / 'file2.csv',
+            output_dir / 'classifier_0' / 'subdir2' / 'file3.csv'
+        ]
+
+        for expected_output_file in expected_output_files:
+            assert expected_output_file.exists()
+            result_table = pv.read_csv(expected_output_file)
             assert 'score' in result_table.column_names
             scores = result_table.column('score').to_numpy()
             assert not np.isnan(scores).any()
@@ -174,25 +200,56 @@ class TestClassifyFunction:
 
 
 
-    test_cases = [
-        ('3757025.parquet', 'config1.json'),
-        ('3757025.parquet', 'config_classifier_only.json')
-    ]
+    # test_cases = [
+    #     ('3757025.parquet', 'config1.json'),
+    #     ('3757025.parquet', 'config_classifier_only.json')
+    # ]
 
-    @pytest.mark.parametrize('real_data_file', test_cases, indirect=True)
-    def test_single_file_processing_parametrized(self, real_data_file):
-        """
-        Tests single file processing using a parametrized fixture to run
-        multiple file combinations through the same test logic.
-        """
+    # @pytest.mark.parametrize('real_data_file', test_cases, indirect=True)
+    def test_single_file_processing(self, clean_mounted_dirs):
+
+        #TODO: we might already have an equivalent test in test_real_file_processing
+
+        dirs = clean_mounted_dirs
+
+        input_file = TestHelpers.copy_input('3757025.parquet')
+        config_file = TestHelpers.copy_config('config1.json')
+
  
-        app.classify(real_data_file['input_path'],
-                real_data_file['output_path'],
-                real_data_file['config_path'])
+        app.classify(input_file,
+                dirs['workspace_output'],
+                config_file)
         
-        assert Path(real_data_file['output_path']).exists()
-        result_table = pv.read_csv(real_data_file['output_path'])
+        expected_output_path = dirs['workspace_output'] / 'classifier_0' / '3757025.csv'
+        
+        assert Path(expected_output_path).exists()
+        result_table = pv.read_csv(expected_output_path)
         assert 'score' in result_table.column_names
+
+
+    def test_single_real_file_bare_classifier(self, clean_mounted_dirs):
+        """
+        Tests that config with only the classifier is processed correctly.
+        Config should be normalized to standard format with defaults applied.
+        """
+
+        dirs = clean_mounted_dirs
+
+        input_file = TestHelpers.copy_input('3757025.parquet')
+        config_file = TestHelpers.copy_config('config_classifier_only.json')
+
+ 
+        app.classify(input_file,
+                dirs['workspace_output'],
+                config_file)
+        
+        expected_output_path = dirs['workspace_output'] / 'classifier_0' / '3757025.csv'
+        
+        assert Path(expected_output_path).exists()
+        result_table = pv.read_csv(expected_output_path)
+        assert 'score' in result_table.column_names
+
+
             
 
     def test_directory_processing_with_real_files(self, clean_mounted_dirs):
@@ -209,9 +266,48 @@ class TestClassifyFunction:
   
         app.classify(input_dir, output_dir, config_path)
         
-        assert (output_dir / '3757025.csv').exists()
-        assert (output_dir / 'group_a' / 'real_file_2.csv').exists()
+        assert (output_dir / 'classifier_0' / '3757025.csv').exists()
+        assert (output_dir / 'classifier_0' / 'group_a' / 'real_file_2.csv').exists()
 
+
+    def test_url_processing(self, clean_mounted_dirs, monkeypatch):
+        """Test processing a directory containing copies of the real parquet file."""
+
+        auth_token = os.getenv("BAW_AUTH_TOKEN")
+        monkeypatch.setenv('QSP', f'user_token={auth_token}')
+
+        TestHelpers.copy_config('config1.json')
+        TestHelpers.copy_input('url_list_1.json')
+        
+        dirs = clean_mounted_dirs
+        input_json_file = dirs['workspace_input'] / 'url_list_1.json'
+        output_dir = dirs['workspace_output']
+        config_path = dirs['workspace_config'] / 'config1.json'
+  
+        app.classify(input_json_file, output_dir, config_path)
+        
+        assert (output_dir / 'classifier_0' / 'file_1' / '3809284_detections.csv').exists()
+        assert (output_dir / 'classifier_0' / 'file_2' / '3809700_detections.csv').exists()
+
+
+    # def test_url_processing_again(self, clean_mounted_dirs, monkeypatch):
+    #     """Test processing a directory containing copies of the real parquet file."""
+
+    #     auth_token = os.getenv("BAW_AUTH_TOKEN")
+    #     monkeypatch.setenv('QSP', f'user_token={auth_token}')
+
+    #     TestHelpers.copy_config('ci_lmr_config_sep2025.json')
+    #     TestHelpers.copy_input('ci_filelist_sources.json')
+        
+    #     dirs = clean_mounted_dirs
+    #     input_json_file = dirs['workspace_input'] / 'ci_filelist_sources.json'
+    #     output_dir = dirs['workspace_output']
+    #     config_path = dirs['workspace_config'] / 'ci_lmr_config_sep2025.json'
+
+    #     app.classify(input_json_file, output_dir, config_path)
+        
+    #     assert (output_dir / 'classifier_0' / 'file_1' / '3809284_detections.csv').exists()
+    #     assert (output_dir / 'classifier_0' / 'file_2' / '3809700_detections.csv').exists()
 
 
 if __name__ == '__main__':

@@ -17,12 +17,17 @@ class TestHelpers:
         """Get the test directory paths."""
         test_root = Path(__file__).parent
         folders = {
+            # source directories for test data
             'data_parquet': test_root / 'test_data' / 'parquet',
             'data_config': test_root / 'test_data' / 'config',
             'data_output': test_root / 'test_data' / 'output',
+            # directories for inputs/outputs of tests which are cleaned before and after test
+            # mounted into the container
             'workspace_input': test_root / 'workspace' / 'input',
             'workspace_config': test_root / 'workspace' / 'config',
             'workspace_output': test_root / 'workspace' / 'output',
+            # directories for inputs/outputs of tests which are cleaned before and after test
+            # for tests of the run scripts run on the host
             'workspace_host': test_root / 'workspace' / 'host_workspace'
         }
     
@@ -52,7 +57,7 @@ class TestHelpers:
     def copy_input(source_file, dest_file = None):
         """Copy files from source to destination directory."""
 
-        TestHelpers.copy_test_file(TestHelpers.get_test_dirs('data_parquet'), 
+        return TestHelpers.copy_test_file(TestHelpers.get_test_dirs('data_parquet'), 
                             TestHelpers.get_test_dirs('workspace_input'), 
                             source_file, dest_file)
 
@@ -60,7 +65,7 @@ class TestHelpers:
     def copy_config(source_file, dest_file = None):
         """Copy files from source to destination directory."""
 
-        TestHelpers.copy_test_file(TestHelpers.get_test_dirs('data_config'), 
+        return TestHelpers.copy_test_file(TestHelpers.get_test_dirs('data_config'), 
                                    TestHelpers.get_test_dirs('workspace_config'), 
                                    source_file, dest_file)
 
@@ -79,6 +84,7 @@ class TestHelpers:
         # dest_file might include a subdirectory structure, ensure parent exists
         dest_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_file, dest_file)
+        return dest_file
 
 
     @staticmethod

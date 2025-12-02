@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Union, Tuple
 import shlex
+import os
 
 def sys_command(command: Union[str, list], cwd: Union[str, Path] = None) -> Tuple[str, str]:
     """
@@ -22,16 +23,23 @@ def sys_command(command: Union[str, list], cwd: Union[str, Path] = None) -> Tupl
     
     # Ensure cwd is a string if it's a Path object for subprocess.run
     cwd_str = str(cwd) if isinstance(cwd, Path) else cwd
-    print(f"Executing command: {command_for_bash} in {cwd_str if cwd_str else 'current directory'}")
+    print(f"Executing command:\n {command_for_bash} \n in {cwd_str if cwd_str else 'current directory'}")
 
     try:
         result = subprocess.run(command_list, capture_output=True, text=True, cwd=cwd_str, check=True)
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Command failed with return code {e.returncode}:\n{e.stderr.strip()}")
+        full_error_output = (
+            f"Command failed with return code {e.returncode}:\n"
+            f"--- Captured STDOUT from Docker Container ---\n{e.stdout.strip()}\n" # Include container's stdout
+            f"--- Captured STDERR from Docker Container ---\n{e.stderr.strip()}\n" # Include container's stderr
+            f"--- End of Docker Container Output ---"
+        )
+        raise RuntimeError(full_error_output) from e # Using 'from e' for proper exception chaining
     except FileNotFoundError:
         raise RuntimeError(f"Command not found: '{command_list[0]}'. Please ensure it's in your PATH.")
     except Exception as e:
         raise RuntimeError(f"An unexpected error occurred while executing command: {e}")
+
 
     return result.stdout.strip(), result.stderr.strip()
 
@@ -40,7 +48,8 @@ def run_docker_container(
     input_file_path: Path,
     output_folder_path: Path, # Changed name to better reflect its purpose as a folder
     config_file_path: Path,
-    docker_image: str = "qutecoacoustics/crane-linear-model-runner:1.0.0"
+    docker_image: str = "qutecoacoustics/crane-linear-model-runner:1.0.0",
+    classify_args: Union[list, None] = None
 ) -> Tuple[str, str]:
     """
     Executes a Docker container with specified input, output, and config files.
@@ -88,15 +97,27 @@ def run_docker_container(
     config_container_path = f"/mnt/config/config.json"
     output_container_path = f"/mnt/output" # This should be the directory where the container writes files
 
+
+
     # Construct the docker run command
     # Note: Using Path objects directly in f-strings converts them to strings.
     docker_command = [
         "docker", "run", "--rm", # --rm removes container after exit
         "-v", f"{input_file_path}:{input_container_path}",
         "-v", f"{config_file_path}:{config_container_path}",
-        "-v", f"{output_folder_path}:{output_container_path}",
-        docker_image,
+        "-v", f"{output_folder_path}:{output_container_path}"
     ]
+
+    baw_auth_token = os.getenv('BAW_AUTH_TOKEN')
+    print(f"BAW_AUTH_TOKEN: {baw_auth_token}")
+    if baw_auth_token:
+        qsp = f"user_token={baw_auth_token}"
+        docker_command.extend(["-e", f"QSP={qsp}"])
+
+    docker_command.append(docker_image)
+
+    if classify_args:
+        docker_command.extend(classify_args)
 
     stdout, stderr = sys_command(docker_command)
 

@@ -69,7 +69,7 @@ def test_docker_run_produces_output_with_params(docker_image, clean_mounted_dirs
 
     subprocess.run(run_command, check=True)
     
-    expected_output_file = host_folder / 'hi_mum.csv' 
+    expected_output_file = host_folder / 'classifier_0' / 'hi_mum.csv' 
     assert expected_output_file.exists(), "Output file was not created!"
     assert expected_output_file.stat().st_size > 0, "Output file is empty!"
 
@@ -93,6 +93,6 @@ def test_docker_run_uses_default_paths(docker_image, clean_mounted_dirs):
     
     stdout, stderr = TestHelpers.sys_command(run_command)
 
-    expected_output_file = OUTPUT_DIR / "3757025.csv" 
+    expected_output_file = OUTPUT_DIR / 'classifier_0' / "3757025.csv" 
     assert expected_output_file.exists(), "Output file was not created in the default location!"
 

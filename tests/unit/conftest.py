@@ -115,16 +115,14 @@ def sample_data(clean_mounted_dirs):
     
     # Create sample config
     config_path = dirs['workspace_config'] / 'test_config.json'
-    config, beta, beta_bias = UnitTestHelpers.create_sample_config(config_path)
+    config = UnitTestHelpers.create_sample_config(file_path = config_path)
     
     return {
         'parquet_path': str(parquet_path),
         'config_path': str(config_path),
         'output_dir': str(dirs['workspace_output']),
         'sample_table': sample_table,
-        'config': config,
-        'beta': beta,
-        'beta_bias': beta_bias
+        'config': config
     }
 
 
