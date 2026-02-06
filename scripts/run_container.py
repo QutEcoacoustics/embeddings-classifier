@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Union, Tuple
 import shlex
 import os
+from dotenv import load_dotenv, find_dotenv
 
 def sys_command(command: Union[str, list], cwd: Union[str, Path] = None) -> Tuple[str, str]:
     """
@@ -108,11 +109,13 @@ def run_docker_container(
         "-v", f"{output_folder_path}:{output_container_path}"
     ]
 
-    baw_auth_token = os.getenv('BAW_AUTH_TOKEN')
+    baw_auth_token = get_auth_token()
     print(f"BAW_AUTH_TOKEN: {baw_auth_token}")
     if baw_auth_token:
         qsp = f"user_token={baw_auth_token}"
         docker_command.extend(["-e", f"QSP={qsp}"])
+    else:
+        exit("Error: BAW_AUTH_TOKEN environment variable is not set.")
 
     docker_command.append(docker_image)
 
@@ -126,6 +129,15 @@ def run_docker_container(
     print(f"--- Container run finished ---")
 
     return stdout, stderr
+
+def get_auth_token() -> str:
+    baw_auth_token = os.getenv('BAW_AUTH_TOKEN')
+    if not baw_auth_token:
+        load_dotenv(find_dotenv())
+    baw_auth_token = os.getenv('BAW_AUTH_TOKEN')
+    if not baw_auth_token:
+        raise EnvironmentError("BAW_AUTH_TOKEN environment variable is not set.")
+    return baw_auth_token
 
 
 def main_cli():

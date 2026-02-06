@@ -12,6 +12,7 @@ import json
 import base64
 import os
 import sys
+import logging
 from pathlib import Path
 from typing import Dict, Any, Union, List
 import requests
@@ -26,7 +27,11 @@ import pyarrow.fs as fs
 from urllib.parse import urlparse, urlunparse, ParseResult, parse_qs, urlencode
 from dataclasses import dataclass
 
-
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 SUPPORTED_EXTENSIONS = ['.parquet', '.csv']
 DEFAULT_OUTPUT_EXTENSION = '.csv'
@@ -89,7 +94,7 @@ def get_parsed_url(url: str) -> ParseResult:
     
     # add any env qsps to the url
     env_qsp = os.environ.get('QSP', None)
-    print(f"Environment QSP: {env_qsp}")  # Debug print
+    logging.debug(f"Environment QSP: {env_qsp}")
     if env_qsp:
         query_params = parse_qs(parsed_url.query)
         new_query_params = parse_qs(env_qsp)
@@ -98,7 +103,7 @@ def get_parsed_url(url: str) -> ParseResult:
         new_query_string = urlencode(query_params, doseq=True)
         parsed_url = parsed_url._replace(query=new_query_string)
 
-    print(f"Parsed URL: {urlunparse(parsed_url)}")  # Debug print
+    logging.info(f"Parsed URL: {urlunparse(parsed_url)}")
 
     return parsed_url
 
@@ -154,13 +159,13 @@ def load_config(config_path: str) -> List[Dict[str, Any]]:
         return normalized_configs
 
     except FileNotFoundError:
-        print(f"Error: Config file '{config_path}' not found")
+        logging.error(f"Error: Config file '{config_path}' not found")
         sys.exit(1)
     except json.JSONDecodeError as e:
-        print(f"Error: Invalid JSON in config file: {e}")
+        logging.error(f"Error: Invalid JSON in config file: {e}")
         sys.exit(1)
     except Exception as e:
-        print(f"Error loading config: {e}")
+        logging.error(f"Error loading config: {e}")
         sys.exit(1)
 
 
@@ -180,7 +185,7 @@ def deserialize_classifier_params(classifier_config: Dict[str, Any]) -> tuple:
         return beta, beta_bias
     
     except Exception as e:
-        print(f"Error deserializing classifier parameters: {e}")
+        logging.error(f"Error deserializing classifier parameters: {e}")
         sys.exit(1)
 
 
@@ -217,7 +222,7 @@ def process_table(
     try:
 
         
-        print(f"Processing table: {table.num_rows} rows, {table.num_columns} columns")
+        logging.info(f"Processing table: {table.num_rows} rows, {table.num_columns} columns")
 
         num_feature_cols = len(table.column_names) - len(metadata_columns)
 
@@ -255,7 +260,7 @@ def process_table(
         passing_row_indices, passing_class_indices = np.where(above_threshold_mask)
 
         if len(passing_row_indices) == 0 and not save_empty:
-            print("No scores passed the threshold. No output file will be created.")
+            logging.info("No scores passed the threshold. No output file will be created.")
             return True
         
         scores_long = scores[passing_row_indices, passing_class_indices]
@@ -287,14 +292,14 @@ def process_table(
                            write_options=pcsv.WriteOptions(include_header=True))
         else:
             pq.write_table(result_table, output_path)
-        print(f"Saved results to {output_path}")
+        logging.info(f"Saved results to {output_path}")
         
         result.success = True
 
         return result
 
     except Exception as e:
-        print(f"Error processing table: {e}")
+        logging.error(f"Error processing table: {e}")
         result.success = False
         result.error = str(e)
         return result
@@ -324,13 +329,13 @@ def get_table_from_path(input_path: Union[Path, ParseResult]) -> pa.Table:
         try:
             table = pq.read_table(input_path)
         except Exception as e:
-            print(f"Error reading {input_path}: {e}")
+            logging.error(f"Error reading {input_path}: {e}")
             return None, str(e)
 
     elif isinstance(input_path, ParseResult):
         url = urlunparse(input_path)
         try:
-            print(f"Reading from URL: {url}")
+            logging.info(f"Reading from URL: {url}")
             response = requests.get(url)
             response.raise_for_status()  # This will raise an HTTPError for bad responses (4xx or 5xx)
             buffer = io.BytesIO(response.content)
@@ -338,14 +343,14 @@ def get_table_from_path(input_path: Union[Path, ParseResult]) -> pa.Table:
 
         except requests.exceptions.RequestException as e:
             # Catch network-related errors from the requests library
-            print(f"Error downloading {url}: {e}")
+            logging.error(f"Error downloading {url}: {e}")
             return None, f"Error downloading {url}: {e}"
         except Exception as e:
             # Catch other errors, like pyarrow failing to parse the file
-            print(f"Error processing data from {url}: {e}")
+            logging.error(f"Error processing data from {url}: {e}")
             return None, f"Error processing data from {url}: {e}"
     else:
-        print(f"Error: input_path must be a Path or ParseResult, got {type(input_path)}")
+        logging.error(f"Error: input_path must be a Path or ParseResult, got {type(input_path)}")
         return None, f"Error: input_path must be a Path or ParseResult, got {type(input_path)}"
     
     return table, None
@@ -371,7 +376,7 @@ def process_single_file(
 
     # return early if everything is done
     if all(co['output_path'].exists() and co['skip_existing'] for co in configs):
-        print(f"All output files for {input_path} already exist, skipping processing.")
+        logging.info(f"All output files for {input_path} already exist, skipping processing.")
         for result in results:
             result.success = True
             result.message = f"Output file {result.output_path} already exists, skipping processing."
@@ -380,7 +385,7 @@ def process_single_file(
 
     table, error= get_table_from_path(input_path)
     if not table:
-        print(f"Error reading table from {input_path}: {error}")
+        logging.error(f"Error reading table from {input_path}: {error}")
         for result in results:
             result.success = False
             result.error = str(error)
@@ -388,12 +393,12 @@ def process_single_file(
 
     for i, config in enumerate(configs):
 
-        print(f"Processing: {input_path} -> {output_path}")
+        logging.info(f"Processing: {input_path} -> {output_path}")
 
         if config['skip_existing'] and config['output_path'].exists():
-            print(f"Output file {config['output_path']} already exists, skipping processing.")
+            logging.info(f"Output file {config['output_path']} already exists, skipping processing.")
       
-        print(f"Processing file: {input_path} for classifier {config['classifier_name']}")
+        logging.info(f"Processing file: {input_path} for classifier {config['classifier_name']}")
         result = process_table(
             table, config['output_path'], config['classifier']['beta'], config['classifier']['beta_bias'], 
             config['classifier']['classes'], config['threshold'], config['save_empty']
@@ -408,7 +413,7 @@ def process_single_file(
 def get_parquet_files(directory: Union[Path, str]) -> list:
     """Get all parquet files in directory recursively."""
     files = list(Path(directory).rglob('*.parquet'))
-    print(f"Found {len(files)} parquet files")
+    logging.info(f"Found {len(files)} parquet files")
     return files
 
 
@@ -453,7 +458,7 @@ def read_json_input_file(input_path: Union[Path, str]) -> tuple:
         return input_paths, output_paths
     
     except Exception as e:
-        print(f"Error reading JSON input file: {e}")
+        logging.error(f"Error reading JSON input file: {e}")
         sys.exit(1)
 
 
@@ -517,7 +522,7 @@ def classify(input_path, output_path, config_path):
       - Path to a json file of urls and output paths
     """
 
-    print('classify command called')
+    logging.debug('classify command called')
 
     configs = load_config(config_path)
 
@@ -527,23 +532,23 @@ def classify(input_path, output_path, config_path):
         classifier_config['beta'] = beta
         classifier_config['beta_bias'] = beta_bias
     
-        print(f"Classes found in config: {classifier_config['classes']}")
-        print(f"Beta shape: {beta.shape}, Beta bias shape: {beta_bias.shape}")
+        logging.info(f"Classes found in config: {classifier_config['classes']}")
+        logging.info(f"Beta shape: {beta.shape}, Beta bias shape: {beta_bias.shape}")
 
     if input_path.is_file():
 
-        print(f"Processing file: {input_path}")
+        logging.info(f"Processing file: {input_path}")
 
         if input_path.suffix == '.parquet':
             input_paths = [input_path]
             output_paths = [output_path]
 
         elif input_path.suffix == '.json':
-            print(f"Reading input from JSON file: {input_path}")
+            logging.info(f"Reading input from JSON file: {input_path}")
             input_paths, output_paths = read_json_input_file(input_path)
 
         else:
-            print(f"Error: Input file '{input_path}' must be a .parquet or .json file")
+            logging.error(f"Error: Input file '{input_path}' must be a .parquet or .json file")
             sys.exit(1)
 
     elif input_path.is_dir():
@@ -554,7 +559,7 @@ def classify(input_path, output_path, config_path):
 
         
     else:
-        print(f"Error: Input path '{input_path}' does not exist")
+        logging.error(f"Error: Input path '{input_path}' does not exist")
         sys.exit(1)
                
     success_count = 0
@@ -569,30 +574,30 @@ def classify(input_path, output_path, config_path):
         )
 
         if any([r.success is False for r in file_results]):
-            print(f"--> FAILED: {input_path}")
+            logging.warning(f"--> FAILED: {input_path}")
         else:
             success_count += 1
 
-    print("\n--- PROCESSING SUMMARY ---")
-    print(f"Successfully processed {success_count}/{total_files} files.")
+    logging.info("\n--- PROCESSING SUMMARY ---")
+    logging.info(f"Successfully processed {success_count}/{total_files} files.")
 
     if success_count < total_files:
         failure_count = total_files - success_count
-        print(
+        logging.warning(
             f"\nEncountered {failure_count} error(s) during processing. "
             "Exiting with error code 1.",
             file=sys.stderr
         )
         sys.exit(1)
 
-    print("\nAll files processed successfully.")
+    logging.info("\nAll files processed successfully.")
             
 
 
 
 def show_version():
     """Reads and prints the content of the /VERSION file."""
-    print("Running 'version' command...")
+    logging.info("Running 'version' command...")
     version_file_container = Path('/VERSION')
     version_file_src = Path(__file__).parent / 'VERSION'
 

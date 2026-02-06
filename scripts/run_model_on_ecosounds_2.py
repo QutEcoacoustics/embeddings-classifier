@@ -284,7 +284,6 @@ def main(params_path, limit=-1, docker_image=DEFAULT_DOCKER_IMAGE):
             logging.error(f"({run_index + 1}/{len(params)}) run failed with exception: {exc}", exc_info=True)
 
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run model on ecosounds data in parallel.")
     parser.add_argument("--params", type=Path, required=True, help="Path to JSON params for running on ecosounds data")

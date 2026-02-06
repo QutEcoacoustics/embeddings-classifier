@@ -332,9 +332,9 @@ if __name__ == "__main__":
         description="Postprocess detection results from EcoSounds by adding metadata and aggregating results.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  %(prog)s --filelist filelist.json --results_dir results/ --output_file output.csv
-  %(prog)s --filelist /path/to/filelist.json --results_dir /path/to/results/ --output_file /path/to/output.csv
+        Examples:
+        %(prog)s --filelist filelist.json --results_dir results/ --output_file output.csv
+        %(prog)s --filelist /path/to/filelist.json --results_dir /path/to/results/ --output_file /path/to/output.csv
         """
     )
     

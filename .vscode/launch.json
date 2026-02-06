@@ -4,6 +4,7 @@
   // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
   "version": "0.2.0",
   "configurations": [
+    
     {
       "name": "Python Debugger: Current File",
       "type": "debugpy",
@@ -25,9 +26,9 @@
       "request": "launch",
       "program": "${workspaceFolder}/scripts/postprocess_from_ecosounds_1.py",
       "args": [
-        "--filelist", "./local_files/inference_results/ci/results/filelist.json",
-        "--results_dir", "./local_files/inference_results/ci/results/classifier_0",
-        "--output_file", "./local_files/inference_results/ci/results/classifier_0_aggregated/ci_sep25_results.csv",
+        "--filelist", "{}",
+        "--results_dir", "{}",
+        "--output_file", "{}",
         "--exclude_class", "neg"
       ],
       "console": "integratedTerminal"
