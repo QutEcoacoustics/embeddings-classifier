@@ -34,10 +34,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install numpy pyarrow pytest pytest-cov pytest-mock
 
-      - name: Install package and smoke test import
+      - name: Install package and run unit tests
         run: |
           pip install -e .
           python -c "import embeddings_classifier.app"
+          pytest tests/unit/ -v
       
   build:
     needs: test

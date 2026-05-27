@@ -17,6 +17,7 @@ dependencies = [
 
 [tool.hatch.version]
 path = "src/VERSION"
+pattern = "^(?P<version>.*)$"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/embeddings_classifier"]

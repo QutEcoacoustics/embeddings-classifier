@@ -39,7 +39,7 @@ COPY src/VERSION /VERSION
 COPY src /app/src
 WORKDIR /app
 
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir --no-deps -e .
 
 # Default command
 ENTRYPOINT ["python", "-m", "embeddings_classifier.app"]
