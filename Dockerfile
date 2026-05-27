@@ -32,11 +32,16 @@ RUN apk add --no-cache curl openssl
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 
 # Copy your application code and other necessary files
+COPY pyproject.toml /app/pyproject.toml
+COPY README.md /app/README.md
+COPY LICENSE /app/LICENSE
 COPY src/VERSION /VERSION
 COPY src /app/src
 WORKDIR /app
 
+RUN pip install --no-cache-dir -e .
+
 # Default command
-ENTRYPOINT ["python", "src/app.py"]
+ENTRYPOINT ["python", "-m", "embeddings_classifier.app"]
 
 CMD ["classify"]

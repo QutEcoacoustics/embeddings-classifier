@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "embeddings-classifier"
+dynamic = ["version"]
+description = "Embeddings-based linear classifier processor"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = [
+    "numpy",
+    "pyarrow",
+    "requests",
+]
+
+[tool.hatch.version]
+path = "src/VERSION"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/embeddings_classifier"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/embeddings_classifier",
+    "src/VERSION",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]

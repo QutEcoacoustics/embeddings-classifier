@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from helpers import TestHelpers
 from unit_helpers import UnitTestHelpers
-import app 
+import embeddings_classifier.app as app
 
 
 class TestClassifyFunction:
