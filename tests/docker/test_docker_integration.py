@@ -15,6 +15,13 @@ INPUT_DIR = TEST_ROOT / "workspace" / "input"
 OUTPUT_DIR = TEST_ROOT / "workspace" / "output"
 CONFIG_DIR = TEST_ROOT / "workspace" / "config"
 
+
+def _docker_user_args():
+    """Run container processes as the host user when supported."""
+    if hasattr(os, "getuid") and hasattr(os, "getgid"):
+        return ["--user", f"{os.getuid()}:{os.getgid()}"]
+    return []
+
 @pytest.mark.docker
 def test_docker_build_creates_image():
     """
@@ -59,6 +66,7 @@ def test_docker_run_produces_output_with_params(docker_image, clean_mounted_dirs
     
     run_command = [
         "docker", "run", "--rm",
+        *_docker_user_args(),
         "-v", f"{host_folder.resolve()}:{custom_mount}",
         docker_image, 
         "classify", 
@@ -85,6 +93,7 @@ def test_docker_run_uses_default_paths(docker_image, clean_mounted_dirs):
 
     run_command = [
         "docker", "run", "--rm",
+        *_docker_user_args(),
         "-v", f"{CONFIG_DIR.resolve()}:/mnt/config",
         "-v", f"{INPUT_DIR.resolve()}:/mnt/input",
         "-v", f"{OUTPUT_DIR.resolve()}:/mnt/output",

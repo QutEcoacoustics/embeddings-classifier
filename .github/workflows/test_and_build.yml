@@ -69,12 +69,13 @@ jobs:
       - name: Unit Test in Docker container
         run: |
           docker run --rm \
+            --user $(id -u):$(id -g) \
             -e BAW_AUTH_TOKEN="${{ secrets.ECOSOUNDS_API_TOKEN }}" \
             -v ${{ github.workspace }}:/app \
             --entrypoint python \
             parquet-processor:latest \
             -m pytest tests/unit/ -v
 
-      - name: Integration Test form host
+      - name: Integration Test from host
         run: |
-          pytest -m docker tests/docker/test_docker_integration.py
+          pytest -c pytest.host.ini -m docker tests/docker/test_docker_integration.py
