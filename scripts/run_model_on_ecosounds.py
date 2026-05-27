@@ -2,6 +2,7 @@ import concurrent.futures
 import os
 import argparse
 import json
+from glob import glob
 from pathlib import Path
 import time
 from collections import deque
@@ -13,9 +14,8 @@ import pandas as pd
 from recognizer_workshop.baw_api import baw_api
 from recognizer_workshop import baw_helpers
 
+from constants import DEFAULT_DOCKER_IMAGE
 from run_container import run_docker_container
-
-DEFAULT_DOCKER_IMAGE = "crane-linear-model-runner:1.0.0"
 
 api = None
 
@@ -99,9 +99,9 @@ def get_parquet(arid, destination_filename, timing_store):
 
 
 def results_exist(site_output_path):
-
-    pattern = site_output_path.replace('<classifier_name>', '*') / '*.csv'
-    results_files = list(site_output_path.rglob(pattern))
+    pattern_base = str(site_output_path).replace('<classifier_name>', '*')
+    csv_pattern = str(Path(pattern_base) / '**' / '*.csv')
+    results_files = glob(csv_pattern, recursive=True)
     return len(results_files) > 0
 
 

@@ -15,7 +15,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Dict, Any, Union, List
+from typing import Dict, Any, Union, List, Optional, Tuple
 import requests
 import io
 import re
@@ -41,7 +41,7 @@ DEFAULT_OUTPUT_EXTENSION = '.csv'
 class ClassifierResult:
     """Dataclass to hold the result of a classifier run."""
     success: bool
-    output_path: [Path, None] = None
+    output_path: Optional[Path] = None
     message: str = ""
     error: str = ""
 
@@ -268,7 +268,9 @@ def process_table(
 
         if len(passing_row_indices) == 0 and not save_empty:
             logging.info("No scores passed the threshold. No output file will be created.")
-            return True
+            result.success = True
+            result.message = "No scores passed the threshold. No output file was created."
+            return result
         
         scores_long = scores[passing_row_indices, passing_class_indices]
         classes_long = np.array(classes)[passing_class_indices]
@@ -330,7 +332,13 @@ def construct_output_path(output_path_template: Path, classifier_name):
     return output_path
 
 
-def get_table_from_path(input_path: Union[Path, ParseResult]) -> pa.Table:
+def get_table_from_path(input_path: Union[Path, ParseResult]) -> Tuple[Optional[pa.Table], Optional[str]]:
+    """Load a parquet table from a local path or URL.
+
+    Returns a `(table, error)` tuple where `table` is populated on success and
+    `error` is `None`; on failure, `table` is `None` and `error` contains a
+    descriptive message.
+    """
 
     if isinstance(input_path, Path):
         try:
@@ -343,7 +351,8 @@ def get_table_from_path(input_path: Union[Path, ParseResult]) -> pa.Table:
         url = urlunparse(input_path)
         try:
             logging.info(f"Reading from URL: {url}")
-            response = requests.get(url)
+            # Use explicit connect/read timeouts so workers do not hang indefinitely.
+            response = requests.get(url, timeout=(5, 30))
             response.raise_for_status()  # This will raise an HTTPError for bad responses (4xx or 5xx)
             buffer = io.BytesIO(response.content)
             table = pq.read_table(buffer)
@@ -393,8 +402,8 @@ def process_single_file(
         return results
 
 
-    table, error= get_table_from_path(input_path)
-    if not table:
+    table, error = get_table_from_path(input_path)
+    if table is None:
         logging.error(f"Error reading table from {input_path}: {error}")
         for result in results:
             result.success = False
@@ -453,7 +462,7 @@ def read_json_input_file(input_path: Union[Path, str]) -> tuple:
             data = json.load(f)
         
         if not isinstance(data, dict):
-            raise ValueError("JSON input must be a list of objects with 'url' and 'output_path' keys")
+            raise ValueError("Input JSON must be an object in the format {'source': [...], 'output': [...]} (where 'output' is optional)")
         
         input_paths = data.get('source', [])
         output_paths = data.get('output')
@@ -502,7 +511,21 @@ def url_to_local_path(parsed_url: ParseResult, output_extension: str = '.csv') -
     return full_relative_path
 
 
-def full_output_path_templates(output_paths: List[Path], output_parent: Path, input_paths: List[Path]) -> List[Path]:
+def input_path_stem(input_path: Union[Path, ParseResult]) -> str:
+    """Return a stable filename stem for local paths and URL parse results."""
+    if isinstance(input_path, Path):
+        return input_path.stem
+    if isinstance(input_path, ParseResult):
+        leaf = Path(input_path.path).name
+        return Path(leaf).stem if leaf else "index"
+    return "input"
+
+
+def full_output_path_templates(
+    output_paths: List[Path],
+    output_parent: Path,
+    input_paths: List[Union[Path, ParseResult]],
+) -> List[Path]:
     # construct an absoulte output path for each input path
     # if the given output path is relative, everything goes under a folder for each classifier
     # if the given output path is absolute, the final leaf will be put under a folder for each classifier
@@ -514,7 +537,7 @@ def full_output_path_templates(output_paths: List[Path], output_parent: Path, in
         # if the output path does not have a supported extension, assume it's a directory
         # and give it a filename based on the input path and the default extension
         if op.suffix not in SUPPORTED_EXTENSIONS:
-                        op = op / (f"{input_paths[i].stem}{DEFAULT_OUTPUT_EXTENSION}")
+            op = op / (f"{input_path_stem(input_paths[i])}{DEFAULT_OUTPUT_EXTENSION}")
         if not op.is_absolute():
             if '<classifier_name>' in str(op) or '<classifier_name>' in str(output_parent):
                 full_output_paths.append(output_parent / op)

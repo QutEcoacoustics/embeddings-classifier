@@ -21,9 +21,8 @@ import pandas as pd
 from baw_helpers.baw_api import baw_api
 from baw_helpers import baw_helpers
 
+from constants import DEFAULT_DOCKER_IMAGE
 from run_container import run_docker_container
-
-DEFAULT_DOCKER_IMAGE = "qutecoacoustics/crane-linear-model-runner:1.0.3"
 
 api = None
 

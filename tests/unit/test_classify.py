@@ -206,7 +206,7 @@ class TestClassifyFunction:
     # ]
 
     # @pytest.mark.parametrize('real_data_file', test_cases, indirect=True)
-    def test_single_file_processing(self, clean_mounted_dirs):
+    def test_single_file_processing_real_fixture(self, clean_mounted_dirs):
 
         #TODO: we might already have an equivalent test in test_real_file_processing
 

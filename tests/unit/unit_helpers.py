@@ -170,7 +170,6 @@ class UnitTestHelpers:
                              name: str = False,
                              threshold: Union[float, None] = 0.0):
         """Create single config file for a single classifier (dict format)."""
-        file_path.parent.mkdir(parents=True, exist_ok=True)
         
         classifier = UnitTestHelpers.create_sample_classifier(num_features, num_classes)
         

@@ -546,12 +546,6 @@ def main(filelist, results_dir, output_file, limit=None, exclude_classes=None):
 
     return total_rows
 
-main(
-    filelist="./local_files/inference_results/fsp/results/filelist.json",
-    results_dir="./local_files/inference_results/fsp/results/classifier_0",
-    output_file="./local_files/inference_results/fsp/results/classifier_0_aggregated/fsp_dec25_results_01.csv"
-)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

@@ -7,6 +7,8 @@ import shlex
 import os
 from dotenv import load_dotenv, find_dotenv
 
+from constants import DEFAULT_DOCKER_IMAGE
+
 def sys_command(command: Union[str, list], cwd: Union[str, Path] = None) -> Tuple[str, str]:
     """
     Execute a system command and return the output (stdout, stderr).
@@ -68,7 +70,7 @@ def run_docker_container(
     input_file_path: Path,
     output_folder_path: Path, # Changed name to better reflect its purpose as a folder
     config_file_path: Path,
-    docker_image: str = "qutecoacoustics/crane-linear-model-runner:1.0.0",
+    docker_image: str = DEFAULT_DOCKER_IMAGE,
     classify_args: Union[list, None] = None
 ) -> Tuple[str, str]:
     """
@@ -129,12 +131,10 @@ def run_docker_container(
     ]
 
     baw_auth_token = get_auth_token()
-    print(f"BAW_AUTH_TOKEN: {baw_auth_token}")
-    if baw_auth_token:
-        qsp = f"user_token={baw_auth_token}"
-        docker_command.extend(["-e", f"QSP={qsp}"])
-    else:
-        exit("Error: BAW_AUTH_TOKEN environment variable is not set.")
+    masked_token = f"{baw_auth_token[:3]}***{baw_auth_token[-3:]}"
+    print(f"BAW_AUTH_TOKEN: {masked_token}")
+    qsp = f"user_token={baw_auth_token}"
+    docker_command.extend(["-e", f"QSP={qsp}"])
 
     docker_command.append(docker_image)
 
@@ -190,7 +190,7 @@ def main_cli():
     parser.add_argument(
         "--image",
         type=str,
-        default="qutecoacoustics/crane-linear-model-runner:1.0.0",
+        default=DEFAULT_DOCKER_IMAGE,
         help="Docker image to use for processing."
     )
 
