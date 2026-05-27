@@ -62,8 +62,8 @@ jobs:
           context: .
           file: ./Dockerfile
           push: false
+          load: true
           tags: parquet-processor:latest
-          platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
       
