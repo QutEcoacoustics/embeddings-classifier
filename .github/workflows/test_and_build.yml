@@ -34,17 +34,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install numpy pyarrow pytest pytest-cov pytest-mock
       
-      - name: Create test directory structure
-        run: |
-          mkdir -p tests/files/parquet
-          mkdir -p tests/files/config
-          mkdir -p tests/mounted/input
-          mkdir -p tests/mounted/config
-          mkdir -p tests/mounted/output
-          touch tests/mounted/input/.gitkeep
-          touch tests/mounted/config/.gitkeep
-          touch tests/mounted/output/.gitkeep
-      
   build:
     needs: test
     runs-on: ubuntu-latest
@@ -52,6 +41,16 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install pytest for host integration tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-mock
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -72,8 +71,9 @@ jobs:
           docker run --rm \
             -e BAW_AUTH_TOKEN="${{ secrets.ECOSOUNDS_API_TOKEN }}" \
             -v ${{ github.workspace }}:/app \
+            --entrypoint pytest \
             parquet-processor:latest \
-            pytest tests/unit/ -v
+            tests/unit/ -v
 
       - name: Integration Test form host
         run: |
