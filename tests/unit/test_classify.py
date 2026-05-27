@@ -290,24 +290,15 @@ class TestClassifyFunction:
         assert (output_dir / 'classifier_0' / 'file_2' / '3809700_detections.csv').exists()
 
 
-    # def test_url_processing_again(self, clean_mounted_dirs, monkeypatch):
-    #     """Test processing a directory containing copies of the real parquet file."""
+    @pytest.mark.skip(reason="TODO: add a redacted/synthetic large URL-manifest integration test")
+    def test_url_processing_large_manifest_todo(self):
+        """
+        Placeholder for validating large JSON URL input manifests.
 
-    #     auth_token = os.getenv("BAW_AUTH_TOKEN")
-    #     monkeypatch.setenv('QSP', f'user_token={auth_token}')
-
-    #     TestHelpers.copy_config('ci_lmr_config_sep2025.json')
-    #     TestHelpers.copy_input('ci_filelist_sources.json')
-        
-    #     dirs = clean_mounted_dirs
-    #     input_json_file = dirs['workspace_input'] / 'ci_filelist_sources.json'
-    #     output_dir = dirs['workspace_output']
-    #     config_path = dirs['workspace_config'] / 'ci_lmr_config_sep2025.json'
-
-    #     app.classify(input_json_file, output_dir, config_path)
-        
-    #     assert (output_dir / 'classifier_0' / 'file_1' / '3809284_detections.csv').exists()
-    #     assert (output_dir / 'classifier_0' / 'file_2' / '3809700_detections.csv').exists()
+        The active test_url_processing already covers URL JSON parsing and auth.
+        This TODO should focus on scale/shape with safe non-sensitive fixture data.
+        """
+        pass
 
 
 if __name__ == '__main__':

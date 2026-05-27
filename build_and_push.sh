@@ -2,7 +2,7 @@
 
 DOCKERHUB_USERNAME="qutecoacoustics"
 IMAGE_NAME="crane-linear-model-runner"
-IMAGE_VERSION="1.0.2"
+IMAGE_VERSION="1.0.3"
 DOCKERFILE_PATH="./Dockerfile"
 BUILD_CONTEXT_PATH="." # This is typically '.' for the current directory
 

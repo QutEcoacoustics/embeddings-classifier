@@ -23,7 +23,7 @@ from baw_helpers import baw_helpers
 
 from run_container import run_docker_container
 
-DEFAULT_DOCKER_IMAGE = "qutecoacoustics/crane-linear-model-runner:1.0.1"
+DEFAULT_DOCKER_IMAGE = "qutecoacoustics/crane-linear-model-runner:1.0.3"
 
 api = None
 
@@ -61,12 +61,24 @@ def get_filelist(baw_filter, filelist_path, limit=-1):
 
     url = "audio_recordings/filter?disable_paging=true"
 
-    response = api.post(url, payload)
+    #response = api.post(url, payload)
 
-    if 'data' not in response:
-        raise Exception(f"Failed to fetch filelist: {response.status_code} {response.text}")
+
+    filelist, _cache_file = baw_helpers.sample_filter_pages(
+        api=api,
+        model="audio_recordings",
+        filter_params=payload,
+        save_path=Path(filelist_path).parent,
+        page_size=500,
+        limit=None,
+        use_cache=True
+    )
+
+
+    # if 'data' not in response:
+    #     raise Exception(f"Failed to fetch filelist: {response.status_code} {response.text}")
     
-    filelist = response['data']
+    # filelist = response['data']
 
     filelist_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -179,7 +191,7 @@ def get_parquet(arid, destination_filename, timing_store):
     return result
 
 
-def process_from_links(inputs_json, config_path, output_path, timing_store, docker_image):
+def process_from_links(inputs_json, config_path, output_path, timing_store, docker_image, workers=1):
 
     Path(output_path).mkdir(parents=True, exist_ok=True)
 
@@ -189,7 +201,11 @@ def process_from_links(inputs_json, config_path, output_path, timing_store, dock
         output_folder_path=output_path,
         config_file_path=Path(config_path),
         docker_image=docker_image,
-        classify_args=['classify', '--input', str(Path('/mnt/input/') / inputs_json.name)],
+        classify_args=[
+            'classify',
+            '--input', str(Path('/mnt/input/') / inputs_json.name),
+            '--workers', str(max(1, int(workers)))
+        ],
     )
     container_duration = time.perf_counter() - start_time
     timing_store['container_run_times'].append(container_duration)
@@ -241,7 +257,7 @@ def setup_logging(output_dir):
     return timing_store
 
 
-def main(params_path, limit=-1, docker_image=DEFAULT_DOCKER_IMAGE):
+def main(params_path, limit=-1, docker_image=DEFAULT_DOCKER_IMAGE, workers=1):
     """
     Main function to run the model on ecosounds data.
     Reads parameters from a JSON file, fetches filelist, processes files in parallel,
@@ -276,7 +292,8 @@ def main(params_path, limit=-1, docker_image=DEFAULT_DOCKER_IMAGE):
                 Path(run['config']),
                 Path(run['output']),
                 timing_store,
-                docker_image)
+                docker_image,
+                workers)
 
 
             logging.info(f"({run_index + 1}/{len(params)}) runs completed successfully.")
@@ -284,11 +301,15 @@ def main(params_path, limit=-1, docker_image=DEFAULT_DOCKER_IMAGE):
             logging.error(f"({run_index + 1}/{len(params)}) run failed with exception: {exc}", exc_info=True)
 
 
+# main("local_files/inference_results/awc_pw/runs/feb2026/run_pw.json")
+# exit(0)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run model on ecosounds data in parallel.")
     parser.add_argument("--params", type=Path, required=True, help="Path to JSON params for running on ecosounds data")
     parser.add_argument("--limit", type=int, default=-1, help="Limit the number of files to process.")
     parser.add_argument("--docker_image", type=str, default=DEFAULT_DOCKER_IMAGE, help="Docker image to use for processing.")
+    parser.add_argument("--workers", type=int, default=1, help="Number of files to process in parallel inside the container.")
     args = parser.parse_args()
 
-    main(args.params, args.limit, args.docker_image)
+    main(args.params, args.limit, args.docker_image, args.workers)

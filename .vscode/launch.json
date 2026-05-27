@@ -5,6 +5,7 @@
   "version": "0.2.0",
   "configurations": [
     
+    
     {
       "name": "Python Debugger: Current File",
       "type": "debugpy",
@@ -30,6 +31,18 @@
         "--results_dir", "{}",
         "--output_file", "{}",
         "--exclude_class", "neg"
+      ],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Debug stratify.py (bittern feb2026)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/stratify.py",
+      "args": [
+        "local_files/inference_results/bittern/runs/feb2026/results/1131/aggregated_batch_01/classifier_0/0_feb2026_aggregated.csv",
+        "-o",
+        "local_files/inference_results/bittern/runs/feb2026/results/1131/aggregated_batch_01/classifier_0/for_verification_01.csv"
       ],
       "console": "integratedTerminal"
     }

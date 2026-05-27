@@ -65,7 +65,14 @@ def baw_listen_link(baw_instance, arid, start_offset, end_offset):
     return f"{baw_instance}/listen/{arid}/?start={start_offset}&end={end_offset}"
 
 
-def process_csv(csv_file: Path, filelist_dic, output_file: Path, baw_instance="https://api.ecosounds.org"):
+def process_csv(
+    csv_file: Path,
+    filelist_dic,
+    output_file: Path,
+    included_labels=None,
+    label_map=None,
+    baw_instance="https://api.ecosounds.org"
+):
     """
     reads the csv, finds the corresponding file in the (filename stem is the id) filelist
     adds metadata columns to the data
@@ -85,10 +92,12 @@ def process_csv(csv_file: Path, filelist_dic, output_file: Path, baw_instance="h
     file_metadata = filelist_dic[arid]
     
 
-    with open(csv_file, 'r') as f:
+    with open(csv_file, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         rows = []
         for row in reader:
+            if included_labels is not None and row['label'] not in included_labels:
+                continue
 
             full_datetime = process_datetime(file_metadata['recorded_date'], int(row['offset']))
             # source, site_name = baw_source(file_metadata['source'], baw_instance=baw_instance)
@@ -100,11 +109,11 @@ def process_csv(csv_file: Path, filelist_dic, output_file: Path, baw_instance="h
             processed_row['audio_recording_id'] = arid
             processed_row['site_name'] = file_metadata['sites.name']
             processed_row['site_id'] = int(file_metadata['site_id'])
-            processed_row['region_name'] = file_metadata['regions.name']
-            processed_row['region_id'] = int(file_metadata['regions.id'])
+            processed_row['region_name'] = file_metadata['regions.name'] if file_metadata['regions.name'] else None
+            processed_row['region_id'] = int(file_metadata['regions.id']) if file_metadata['regions.id'] else None
             processed_row['end_offset_seconds'] = end
             processed_row['start_offset_seconds'] = int(row['offset'])
-            processed_row['label'] = row['label']
+            processed_row['label'] = label_map.get(row['label'], row['label']) if label_map else row['label']
             processed_row['score'] = float(row['score'])
             processed_row['start_datetime'] = full_datetime
             processed_row['listen_link'] = baw_listen_link(baw_instance, arid, int(row['offset']), end)
@@ -116,12 +125,12 @@ def process_csv(csv_file: Path, filelist_dic, output_file: Path, baw_instance="h
 
     if not output_file.exists():
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_file, 'w', newline='') as f:
+        with open(output_file, 'w', encoding='utf-8', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=rows[0].keys())
             writer.writeheader()
 
     # append the rows
-    with open(output_file, 'a', newline='') as f:
+    with open(output_file, 'a', encoding='utf-8', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writerows(rows)
 
@@ -226,6 +235,8 @@ def generate_missing_files_summary(filelist, results_files, output_file):
     # Create missing files summary
     missing_summary = {
         "missing_results_total": sum(len(missing) for missing in missing_by_site.values()),
+        "total_files": len(filelist),
+        "completed_files": len(existing_arids),
         "missing_results_summary": []
     }
 
@@ -247,6 +258,7 @@ def generate_missing_files_summary(filelist, results_files, output_file):
 
     # Save missing files summary
     missing_summary_file = output_file.with_name(output_file.stem + '_missing_file_summary.json')
+    output_file.parent.mkdir(parents=True, exist_ok=True)
     with open(missing_summary_file, 'w') as f:
         # Convert to JSON string with normal formatting, then fix the lists
         json_str = json.dumps(missing_summary, indent=2)
@@ -275,11 +287,49 @@ def generate_missing_files_summary(filelist, results_files, output_file):
         f.write(json_str)
     
     print(f"Missing files summary saved to: {missing_summary_file}")
-    print(f"Total missing results files: {missing_summary['missing_results_total']}")
-    
+    print(f"Total missing results files: {missing_summary['missing_results_total']} of {missing_summary['total_files']}")
+
     return missing_summary
 
-def main(filelist, results_dir, output_file, limit=None):
+def parse_included_labels(included_labels_arg):
+    if not included_labels_arg:
+        print("Included labels: all")
+        return None
+
+    labels = [label.strip() for label in included_labels_arg.split(',') if label.strip()]
+    if not labels:
+        print("Included labels: all")
+        return None
+
+    print(f"Included labels: {labels}")
+    return set(labels)
+
+
+def parse_label_map(label_map_arg):
+    if not label_map_arg:
+        print("Label map: none")
+        return None
+
+    mappings = [item.strip() for item in label_map_arg.split(',') if item.strip()]
+    parsed = {}
+    for mapping in mappings:
+        if '=' not in mapping:
+            raise ValueError(f"Invalid label_map entry '{mapping}'. Expected format from=to")
+        source_label, target_label = mapping.split('=', 1)
+        source_label = source_label.strip()
+        target_label = target_label.strip()
+        if not source_label or not target_label:
+            raise ValueError(f"Invalid label_map entry '{mapping}'. Source and target labels must be non-empty")
+        parsed[source_label] = target_label
+
+    print(f"Label map: {parsed}")
+    return parsed
+
+
+def main(filelist, results_dir, output_file, limit=None, included_labels_arg=None, label_map_arg=None):
+
+    included_labels = parse_included_labels(included_labels_arg)
+    label_map = parse_label_map(label_map_arg)
 
     # read the filelist json
     filelist_path = Path(filelist)
@@ -314,7 +364,13 @@ def main(filelist, results_dir, output_file, limit=None):
         output_file.unlink()
 
     for i, csv_file in enumerate(results_files):
-        total_rows += process_csv(csv_file, filelist_dict, output_file)
+        total_rows += process_csv(
+            csv_file,
+            filelist_dict,
+            output_file,
+            included_labels=included_labels,
+            label_map=label_map
+        )
         if i % 100 == 0:
             print(f"Processed {i} of {len(results_files)} files, total rows: {total_rows}")
 
@@ -358,12 +414,32 @@ if __name__ == "__main__":
         help="Path for the consolidated output CSV file. "
              "Will also generate '_aggregated.csv' and '_non_max.csv' variants."
     )
+
+    parser.add_argument(
+        "--included_labels",
+        required=False,
+        default=None,
+        help="Optional comma-separated label list to include (e.g. 'pos,neg'). If omitted, includes all labels."
+    )
+
+    parser.add_argument(
+        "--label_map",
+        required=False,
+        default=None,
+        help="Optional comma-separated label remapping (e.g. 'pos=pw,neg=noise')."
+    )
     
     args = parser.parse_args()
     
     try:
-        total_rows = main(args.filelist, args.results_dir, args.output_file)
-        print(f"Successfully processed {total_rows} total detection rows.")
+        g_total_rows = main(
+            args.filelist,
+            args.results_dir,
+            args.output_file,
+            included_labels_arg=args.included_labels,
+            label_map_arg=args.label_map
+        )
+        print(f"Successfully processed {g_total_rows} total detection rows.")
     except Exception as e:
         print(f"Error: {e}")
         exit(1)

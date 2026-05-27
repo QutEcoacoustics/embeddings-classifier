@@ -33,7 +33,7 @@ COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/pytho
 
 # Copy your application code and other necessary files
 COPY src/VERSION /VERSION
-COPY . /app
+COPY src /app/src
 WORKDIR /app
 
 # Default command

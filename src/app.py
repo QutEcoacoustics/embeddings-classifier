@@ -8,6 +8,7 @@ Uses pure PyArrow for maximum performance and minimal dependencies.
 """
 
 import argparse
+import concurrent.futures
 import json
 import base64
 import os
@@ -73,6 +74,12 @@ def parse_arguments():
         "--config", "-c",
         required=False,
         help="JSON configuration file with classifier parameters"
+    )
+    parser_classify.add_argument(
+        "--workers", "-w",
+        type=int,
+        default=1,
+        help="Number of files to process in parallel (default: 1)"
     )
 
     # --- 'version' subcommand ---
@@ -368,14 +375,17 @@ def process_single_file(
     @param output_path: Path to save the output csv file. This is a template, where 'classifier_name' will be replaced with the classifier name from the config.
     """
 
-    # the separate output path for each classifier
+    # Build per-file config views so shared config objects are not mutated across threads.
+    configs_with_outputs = []
     for config in configs:
-        config['output_path'] = construct_output_path(output_path, config['classifier_name'])
+        config_for_file = dict(config)
+        config_for_file['output_path'] = construct_output_path(output_path, config['classifier_name'])
+        configs_with_outputs.append(config_for_file)
 
-    results = [ClassifierResult(success=False, output_path=config['output_path']) for config in configs]
+    results = [ClassifierResult(success=False, output_path=config['output_path']) for config in configs_with_outputs]
 
     # return early if everything is done
-    if all(co['output_path'].exists() and co['skip_existing'] for co in configs):
+    if all(co['output_path'].exists() and co['skip_existing'] for co in configs_with_outputs):
         logging.info(f"All output files for {input_path} already exist, skipping processing.")
         for result in results:
             result.success = True
@@ -391,12 +401,18 @@ def process_single_file(
             result.error = str(error)
         return results
 
-    for i, config in enumerate(configs):
+    for i, config in enumerate(configs_with_outputs):
 
         logging.info(f"Processing: {input_path} -> {output_path}")
 
         if config['skip_existing'] and config['output_path'].exists():
             logging.info(f"Output file {config['output_path']} already exists, skipping processing.")
+            results[i] = ClassifierResult(
+                success=True,
+                output_path=config['output_path'],
+                message=f"Output file {config['output_path']} already exists, skipping processing."
+            )
+            continue
       
         logging.info(f"Processing file: {input_path} for classifier {config['classifier_name']}")
         result = process_table(
@@ -498,7 +514,7 @@ def full_output_path_templates(output_paths: List[Path], output_parent: Path, in
         # if the output path does not have a supported extension, assume it's a directory
         # and give it a filename based on the input path and the default extension
         if op.suffix not in SUPPORTED_EXTENSIONS:
-          op = op / (f"{input_paths[i].stem}{DEFAULT_OUTPUT_EXTENSION}")
+                        op = op / (f"{input_paths[i].stem}{DEFAULT_OUTPUT_EXTENSION}")
         if not op.is_absolute():
             if '<classifier_name>' in str(op) or '<classifier_name>' in str(output_parent):
                 full_output_paths.append(output_parent / op)
@@ -514,7 +530,7 @@ def full_output_path_templates(output_paths: List[Path], output_parent: Path, in
 
 
 
-def classify(input_path, output_path, config_path):
+def classify(input_path, output_path, config_path, workers=1):
     """
     Main processing function for the 'classify' command.
     @param input_path: 
@@ -568,15 +584,38 @@ def classify(input_path, output_path, config_path):
     full_output_paths = full_output_path_templates(output_paths, Path(output_path), input_paths)
 
 
-    for input_path, output_path in zip(input_paths, full_output_paths):
-        file_results = process_single_file(
-            input_path, output_path, configs
-        )
+    worker_count = max(1, int(workers))
 
-        if any([r.success is False for r in file_results]):
-            logging.warning(f"--> FAILED: {input_path}")
-        else:
-            success_count += 1
+    if worker_count == 1:
+        for input_path, output_path in zip(input_paths, full_output_paths):
+            file_results = process_single_file(
+                input_path, output_path, configs
+            )
+
+            if any([r.success is False for r in file_results]):
+                logging.warning(f"--> FAILED: {input_path}")
+            else:
+                success_count += 1
+    else:
+        logging.info(f"Processing {total_files} files with {worker_count} workers")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_input = {
+                executor.submit(process_single_file, input_path, output_path, configs): input_path
+                for input_path, output_path in zip(input_paths, full_output_paths)
+            }
+
+            for future in concurrent.futures.as_completed(future_to_input):
+                current_input = future_to_input[future]
+                try:
+                    file_results = future.result()
+                except Exception as exc:
+                    logging.error(f"--> FAILED: {current_input}: {exc}", exc_info=True)
+                    continue
+
+                if any([r.success is False for r in file_results]):
+                    logging.warning(f"--> FAILED: {current_input}")
+                else:
+                    success_count += 1
 
     logging.info("\n--- PROCESSING SUMMARY ---")
     logging.info(f"Successfully processed {success_count}/{total_files} files.")
@@ -585,8 +624,7 @@ def classify(input_path, output_path, config_path):
         failure_count = total_files - success_count
         logging.warning(
             f"\nEncountered {failure_count} error(s) during processing. "
-            "Exiting with error code 1.",
-            file=sys.stderr
+            "Exiting with error code 1."
         )
         sys.exit(1)
 
@@ -648,7 +686,7 @@ def main():
     
     if args.command == 'classify':
         input_path, output_path, config_path = get_paths(args)
-        classify(input_path, output_path, config_path)
+        classify(input_path, output_path, config_path, args.workers)
     elif args.command == 'version':
         show_version()
 
