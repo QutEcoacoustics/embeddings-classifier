@@ -2,6 +2,22 @@
 
 Container to run linear model with embeddings input and classification output using json config to load model weights
 
+## Install from source
+
+The application is installable as a Python package.
+
+Install directly from a local checkout:
+
+`pip install -e .`
+
+Install from git source in another project:
+
+`pip install "git+https://github.com/<org>/<repo>.git"`
+
+Then import from Python:
+
+`import embeddings_classifier.app`
+
 
 # Getting started
 
@@ -49,4 +65,14 @@ The configuration file contains:
 - threshold: the cutoff for the output 
 
 Examples can be found in `tests/test_data/config`
+
+## Build package artifacts (local)
+
+Wheel/release publishing is not configured yet, but local package builds can be produced with:
+
+`python -m pip install --upgrade build`
+
+`python -m build`
+
+Artifacts will be created in `dist/`.
 

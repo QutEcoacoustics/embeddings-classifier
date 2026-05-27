@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from helpers import TestHelpers
 
-import app 
+import embeddings_classifier.app as app
 
 
 def test_main_calls_classify_with_args(monkeypatch):
@@ -24,7 +24,7 @@ def test_main_calls_classify_with_args(monkeypatch):
     )
     
     # Patch the actual logic function so we only test the CLI wiring
-    with patch('app.classify') as mock_classify:
+    with patch('embeddings_classifier.app.classify') as mock_classify:
         app.main()
         
         # Assert that our mock function was called exactly once
@@ -42,7 +42,7 @@ def test_main_calls_show_version(monkeypatch):
     """
     monkeypatch.setattr(sys, 'argv', ['app.py', 'version'])
     
-    with patch('app.show_version') as mock_show_version:
+    with patch('embeddings_classifier.app.show_version') as mock_show_version:
         app.main()
         mock_show_version.assert_called_once()
 

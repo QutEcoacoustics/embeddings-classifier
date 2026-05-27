@@ -11,6 +11,7 @@ import argparse
 import concurrent.futures
 import json
 import base64
+from importlib.metadata import PackageNotFoundError, version as get_distribution_version
 import os
 import sys
 import logging
@@ -657,20 +658,26 @@ def classify(input_path, output_path, config_path, workers=1):
 
 
 def show_version():
-    """Reads and prints the content of the /VERSION file."""
+    """Prints version from package metadata, with file fallbacks for dev/container use."""
     logging.info("Running 'version' command...")
+    try:
+        print(f"Version: {get_distribution_version('embeddings-classifier')}")
+        return
+    except PackageNotFoundError:
+        pass
+
     version_file_container = Path('/VERSION')
-    version_file_src = Path(__file__).parent / 'VERSION'
+    version_file_src = Path(__file__).parent.parent / 'VERSION'
 
     if version_file_container.exists():
-        version_file = version_file_container
-    elif version_file_src.exists():
-        version_file = version_file_src
-    else:
-        print("Error: /VERSION file not found in expected locations.", file=sys.stderr)
-        sys.exit(1)
-    version = version_file.read_text().strip()
-    print(f"Version: {version}")
+        print(f"Version: {version_file_container.read_text().strip()}")
+        return
+    if version_file_src.exists():
+        print(f"Version: {version_file_src.read_text().strip()}")
+        return
+
+    print("Error: version metadata is unavailable and VERSION file was not found.", file=sys.stderr)
+    sys.exit(1)
 
 
 def using_container():
@@ -678,9 +685,11 @@ def using_container():
     Check if the script is running inside a container by checking if the 
     /VERSION exists and matches the source VERSION file.
     """
-    if not Path('/VERSION').exists():
+    container_version_file = Path('/VERSION')
+    source_version_file = Path(__file__).parent.parent / 'VERSION'
+    if not container_version_file.exists() or not source_version_file.exists():
         return False
-    if Path('/VERSION').read_text().strip() != (Path(__file__).parent / 'VERSION').read_text().strip():
+    if container_version_file.read_text().strip() != source_version_file.read_text().strip():
         return False
     return True
 

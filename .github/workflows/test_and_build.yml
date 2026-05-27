@@ -15,6 +15,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Validate Ecosounds token
+        env:
+          ECOSOUNDS_API_TOKEN: ${{ secrets.ECOSOUNDS_API_TOKEN }}
+        run: |
+          bash scripts/test_tokens.sh
       
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
@@ -33,6 +39,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install numpy pyarrow pytest pytest-cov pytest-mock
+
+      - name: Install package and run unit tests
+        env:
+          BAW_AUTH_TOKEN: ${{ secrets.ECOSOUNDS_API_TOKEN }}
+        run: |
+          pip install -e .
+          python -c "import embeddings_classifier.app"
+          pytest tests/unit/ -v
       
   build:
     needs: test
