@@ -2,7 +2,7 @@
 
 DOCKERHUB_USERNAME="qutecoacoustics"
 IMAGE_NAME="crane-linear-model-runner"
-IMAGE_VERSION="1.0.3"
+IMAGE_VERSION="test"
 DOCKERFILE_PATH="./Dockerfile"
 BUILD_CONTEXT_PATH="." # This is typically '.' for the current directory
 
@@ -22,10 +22,9 @@ echo "Building and tagging image as: ${FULL_IMAGE_TAG}"
 echo "Building Docker image for multiple platforms (linux/amd64, linux/arm64) from ${DOCKERFILE_PATH} with context ${BUILD_CONTEXT_PATH}..."
 
 docker buildx build \
-    --platform linux/amd64,linux/arm64 \
     -f "${DOCKERFILE_PATH}" \
     -t "${FULL_IMAGE_TAG}" \
-    --push \
+    --load \
     "${BUILD_CONTEXT_PATH}"  # This should be the final argument
 
 

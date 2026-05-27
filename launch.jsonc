@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug postprocess_from_ecosounds_1.py",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/postprocess_from_ecosounds_1.py",
+      "args": [
+        "--filelist", "./local_files/inference_results/ci/results/filelist.json",
+        "--results_dir", "./local_files/inference_results/ci/results/classifier_0",
+        "--output_file", "./local_files/inference_results/ci/results/classifier_0_aggregated/ci_sep25_results.csv",
+        "--exclude_class", "neg"
+      ],
+      "console": "integratedTerminal"
+    }
+  ]
+}

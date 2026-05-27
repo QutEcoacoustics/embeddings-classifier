@@ -4,6 +4,10 @@ import subprocess
 from pathlib import Path
 from typing import Union, Tuple
 import shlex
+import os
+from dotenv import load_dotenv, find_dotenv
+
+from constants import DEFAULT_DOCKER_IMAGE
 
 def sys_command(command: Union[str, list], cwd: Union[str, Path] = None) -> Tuple[str, str]:
     """
@@ -22,25 +26,52 @@ def sys_command(command: Union[str, list], cwd: Union[str, Path] = None) -> Tupl
     
     # Ensure cwd is a string if it's a Path object for subprocess.run
     cwd_str = str(cwd) if isinstance(cwd, Path) else cwd
-    print(f"Executing command: {command_for_bash} in {cwd_str if cwd_str else 'current directory'}")
+    print(f"Executing command:\n {command_for_bash} \n in {cwd_str if cwd_str else 'current directory'}")
 
+    process = None
     try:
-        result = subprocess.run(command_list, capture_output=True, text=True, cwd=cwd_str, check=True)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Command failed with return code {e.returncode}:\n{e.stderr.strip()}")
-    except FileNotFoundError:
-        raise RuntimeError(f"Command not found: '{command_list[0]}'. Please ensure it's in your PATH.")
+        process = subprocess.Popen(
+            command_list,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd_str,
+        )
+        stdout, stderr = process.communicate()
+    except KeyboardInterrupt as e:
+        if process is not None:
+            print("KeyboardInterrupt received. Terminating child process...")
+            process.terminate()
+            try:
+                stdout, stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                print("Child process did not exit in time. Killing child process...")
+                process.kill()
+                process.communicate()
+        raise RuntimeError("Execution interrupted by user (Ctrl+C).") from e
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Command not found: '{command_list[0]}'. Please ensure it's in your PATH.") from exc
     except Exception as e:
-        raise RuntimeError(f"An unexpected error occurred while executing command: {e}")
+        raise RuntimeError(f"An unexpected error occurred while executing command: {e}") from e
 
-    return result.stdout.strip(), result.stderr.strip()
+    if process is not None and process.returncode != 0:
+        full_error_output = (
+            f"Command failed with return code {process.returncode}:\n"
+            f"--- Captured STDOUT from Docker Container ---\n{stdout.strip()}\n"
+            f"--- Captured STDERR from Docker Container ---\n{stderr.strip()}\n"
+            f"--- End of Docker Container Output ---"
+        )
+        raise RuntimeError(full_error_output)
+
+    return stdout.strip(), stderr.strip()
 
 
 def run_docker_container(
     input_file_path: Path,
     output_folder_path: Path, # Changed name to better reflect its purpose as a folder
     config_file_path: Path,
-    docker_image: str = "qutecoacoustics/crane-linear-model-runner:1.0.0"
+    docker_image: str = DEFAULT_DOCKER_IMAGE,
+    classify_args: Union[list, None] = None
 ) -> Tuple[str, str]:
     """
     Executes a Docker container with specified input, output, and config files.
@@ -88,15 +119,27 @@ def run_docker_container(
     config_container_path = f"/mnt/config/config.json"
     output_container_path = f"/mnt/output" # This should be the directory where the container writes files
 
+
+
     # Construct the docker run command
     # Note: Using Path objects directly in f-strings converts them to strings.
     docker_command = [
         "docker", "run", "--rm", # --rm removes container after exit
         "-v", f"{input_file_path}:{input_container_path}",
         "-v", f"{config_file_path}:{config_container_path}",
-        "-v", f"{output_folder_path}:{output_container_path}",
-        docker_image,
+        "-v", f"{output_folder_path}:{output_container_path}"
     ]
+
+    baw_auth_token = get_auth_token()
+    masked_token = f"{baw_auth_token[:3]}***{baw_auth_token[-3:]}"
+    print(f"BAW_AUTH_TOKEN: {masked_token}")
+    qsp = f"user_token={baw_auth_token}"
+    docker_command.extend(["-e", f"QSP={qsp}"])
+
+    docker_command.append(docker_image)
+
+    if classify_args:
+        docker_command.extend(classify_args)
 
     stdout, stderr = sys_command(docker_command)
 
@@ -105,6 +148,15 @@ def run_docker_container(
     print(f"--- Container run finished ---")
 
     return stdout, stderr
+
+def get_auth_token() -> str:
+    baw_auth_token = os.getenv('BAW_AUTH_TOKEN')
+    if not baw_auth_token:
+        load_dotenv(find_dotenv())
+    baw_auth_token = os.getenv('BAW_AUTH_TOKEN')
+    if not baw_auth_token:
+        raise EnvironmentError("BAW_AUTH_TOKEN environment variable is not set.")
+    return baw_auth_token
 
 
 def main_cli():
@@ -138,7 +190,7 @@ def main_cli():
     parser.add_argument(
         "--image",
         type=str,
-        default="qutecoacoustics/crane-linear-model-runner:1.0.0",
+        default=DEFAULT_DOCKER_IMAGE,
         help="Docker image to use for processing."
     )
 

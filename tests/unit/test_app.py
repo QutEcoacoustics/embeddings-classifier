@@ -32,7 +32,7 @@ def test_main_calls_classify_with_args(monkeypatch):
         
         # Assert it was called with the correct Path objects
         mock_classify.assert_called_once_with(
-            Path('in.pq'), Path('out'), Path('conf.json')
+            Path('in.pq'), Path('out'), Path('conf.json'), 1
         )
 
 def test_main_calls_show_version(monkeypatch):

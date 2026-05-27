@@ -143,32 +143,68 @@ class UnitTestHelpers:
     
 
     @staticmethod
-    def create_sample_config(file_path: Path, num_features: int = 1280, num_classes: int = 1, threshold: Union[float, None] = 0.0):
-        """Create a sample configuration file for testing."""
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Create random beta weights and bias
+    def create_sample_classifier(num_features: int = 1280, num_classes: int = 1):
+        """Create a sample classifier file for testing."""
+
+        # Create random weights and bias
         np.random.seed(42)  # For reproducible tests
-        beta = np.random.randn(num_features, num_classes).astype(np.float32)
-        beta_bias = np.random.randn(num_classes).astype(np.float32)
-        
+        weights = np.random.randn(num_features, num_classes).astype(np.float32)
+        bias = np.random.randn(num_classes).astype(np.float32)
+
         # Encode to base64
-        beta_b64 = base64.b64encode(beta.tobytes()).decode('utf-8')
-        beta_bias_b64 = base64.b64encode(beta_bias.tobytes()).decode('utf-8')
+        weights_b64 = base64.b64encode(weights.tobytes()).decode('utf-8')
+        bias_b64 = base64.b64encode(bias.tobytes()).decode('utf-8')
+
+        classifier = {
+            "classes": [f"class_{i}" for i in range(num_classes)],
+            "beta": weights_b64,
+            "beta_bias": bias_b64
+        }
+        
+        return classifier
+
+    @staticmethod
+    def create_sample_config(file_path: Path = None, 
+                             num_features: int = 1280, 
+                             num_classes: int = 1,
+                             name: str = False,
+                             threshold: Union[float, None] = 0.0):
+        """Create single config file for a single classifier (dict format)."""
+        
+        classifier = UnitTestHelpers.create_sample_classifier(num_features, num_classes)
         
         config = {
-            "classifier": {
-                "classes": ["test_class"],
-                "beta": beta_b64,
-                "beta_bias": beta_bias_b64
-            }
+            "classifier": classifier,
         }
 
         if threshold is not None:
             config["threshold"] = threshold
+
+        if name is not False:
+            # We may use None for the name to indicate no classifier name subfolder
+            # so use false here to indicate creating default name
+            config["classifier_name"] = name
+
+        if file_path is not None:
+            # file_path is optional because we may be creating a list config for multiple classifiers
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(file_path, 'w') as f:
+                json.dump(config, f, indent=2)
         
+        return config
+
+    @staticmethod
+    def create_sample_config_list(file_path: Path, 
+                                  config_params_list: list):
+        
+        """
+        Creates a single config file for multiple classifiers (list format)
+        """
+        
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        config = [UnitTestHelpers.create_sample_config(**config_params) for config_params in config_params_list]
+
         with open(file_path, 'w') as f:
             json.dump(config, f, indent=2)
-        
-        return config, beta, beta_bias
-
+            

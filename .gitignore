@@ -176,4 +176,11 @@ cython_debug/
 
 .DS_Store
 
+.vscode/launch.json
+
 local_files/*
+
+
+tests/workspace/*
+tests/workspace/**/*
+!tests/workspace/.gitkeep

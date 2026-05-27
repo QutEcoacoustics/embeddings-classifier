@@ -1,0 +1,11 @@
+{
+    "source": [
+        "https://api.ecosounds.org/analysis_jobs/3/results/3809284/perch-embeddings_4/embeddings.parquet",
+        "https://api.ecosounds.org/analysis_jobs/3/results/3809700/perch-embeddings_4/embeddings.parquet"
+    ],
+    "output": [
+        "file_1/3809284_detections.csv",
+        "file_2/3809700_detections.csv"
+    ]
+}
+
