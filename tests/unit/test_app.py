@@ -7,8 +7,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from helpers import TestHelpers
-
 import embeddings_classifier.app as app
 
 
@@ -66,4 +64,31 @@ def test_main_exits_on_unrecognized_argument(monkeypatch):
     
     with pytest.raises(SystemExit):
         app.main()
+
+
+def test_get_paths_uses_env_fallbacks(monkeypatch):
+    """get_paths should use environment defaults when args are omitted."""
+    monkeypatch.setenv('EMBEDDINGS_CLASSIFIER_INPUT', '/tmp/in')
+    monkeypatch.setenv('EMBEDDINGS_CLASSIFIER_OUTPUT', '/tmp/out')
+    monkeypatch.setenv('EMBEDDINGS_CLASSIFIER_CONFIG', '/tmp/conf.json')
+
+    args = type('Args', (), {'input': None, 'output': None, 'config': None})()
+
+    input_path, output_path, config_path = app.get_paths(args)
+
+    assert input_path == Path('/tmp/in')
+    assert output_path == Path('/tmp/out')
+    assert config_path == Path('/tmp/conf.json')
+
+
+def test_get_paths_raises_when_missing(monkeypatch):
+    """get_paths should fail if neither args nor env vars provide required paths."""
+    monkeypatch.delenv('EMBEDDINGS_CLASSIFIER_INPUT', raising=False)
+    monkeypatch.delenv('EMBEDDINGS_CLASSIFIER_OUTPUT', raising=False)
+    monkeypatch.delenv('EMBEDDINGS_CLASSIFIER_CONFIG', raising=False)
+
+    args = type('Args', (), {'input': None, 'output': None, 'config': None})()
+
+    with pytest.raises(ValueError):
+        app.get_paths(args)
 

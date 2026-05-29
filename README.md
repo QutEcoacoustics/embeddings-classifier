@@ -18,6 +18,71 @@ Then import from Python:
 
 `import embeddings_classifier.app`
 
+## Python API (In-Memory)
+
+The package now supports classifying in-memory data directly, with optional writing to disk.
+
+### Classify an Arrow table (in-memory only)
+
+```python
+import pyarrow as pa
+from embeddings_classifier import classify_table
+
+# table must include metadata columns: source, channel, offset
+table = pa.table({
+  "source": ["file_a.wav"],
+  "channel": [1],
+  "offset": [0.0],
+  "feature_0": [0.1],
+  # ... remaining feature columns
+})
+
+results = classify_table(table, "./config.json")
+
+for r in results:
+  if r.success and r.result_table is not None:
+    print(r.result_table.num_rows)
+```
+
+### Classify an Arrow table and also write output files
+
+```python
+from pathlib import Path
+from embeddings_classifier import classify_table
+
+results = classify_table(
+  table,
+  "./config.json",
+  output_path=Path("./outputs/result.csv"),
+)
+
+# If output_path includes '<classifier_name>', it will be replaced per classifier.
+# Otherwise, the same output path is used directly.
+```
+
+### Classify a pandas DataFrame
+
+```python
+import pandas as pd
+from embeddings_classifier import classify_dataframe
+
+df = pd.DataFrame({
+  "source": ["file_a.wav"],
+  "channel": [1],
+  "offset": [0.0],
+  "feature_0": [0.1],
+  # ... remaining feature columns
+})
+
+results = classify_dataframe(df, "./config.json")
+```
+
+Notes:
+
+- `classify_table` and `classify_dataframe` return a list of `ClassifierResult` (one per classifier).
+- Each `ClassifierResult` may include `result_table` (in-memory output), `output_path`, `success`, and error/message info.
+- If `output_path` is `None`, no files are written.
+
 
 # Getting started
 
@@ -48,7 +113,14 @@ To run:
 
 `docker run --rm -v input_folder:/mnt/input -v output_folder:/mnt/output -v config_file:/mnt/config/config.json <image_name>`
 
-By default, it will classify all parquet files in `/mnt/input ` the input folder, and save the results as csv in `/mnt/output/`, using `/mnt/config.json` as the configuration file. 
+When running the provided Docker image, defaults are supplied through environment variables in the image (`EMBEDDINGS_CLASSIFIER_INPUT`, `EMBEDDINGS_CLASSIFIER_OUTPUT`, `EMBEDDINGS_CLASSIFIER_CONFIG`).
+
+CLI path resolution for `classify` uses this precedence:
+
+1. Explicit CLI args: `--input`, `--output`, `--config`
+2. Environment variables: `EMBEDDINGS_CLASSIFIER_INPUT`, `EMBEDDINGS_CLASSIFIER_OUTPUT`, `EMBEDDINGS_CLASSIFIER_CONFIG`
+
+If a path is missing from both args and environment, the command exits with an error.
 
 # Configuration file
 
