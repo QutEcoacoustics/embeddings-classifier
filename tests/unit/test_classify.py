@@ -146,9 +146,8 @@ class TestClassifyFunction:
         config_path = sample_data['config_path']
         output_path = Path(sample_data['output_dir']) / 'output.parquet'
         
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(FileNotFoundError):
             app.classify(Path('/nonexistent/path'), output_path, config_path)
-        assert exc_info.value.code == 1
     
 
     def test_invalid_config_path(self, sample_data):
@@ -156,9 +155,8 @@ class TestClassifyFunction:
         input_path = sample_data['parquet_path']
         output_path = Path(sample_data['output_dir']) / 'output.parquet'
         
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(FileNotFoundError):
             app.classify(input_path, output_path, '/nonexistent/config.json')
-        assert exc_info.value.code == 1
     
 
     def test_empty_directory(self, clean_mounted_dirs):
@@ -172,9 +170,8 @@ class TestClassifyFunction:
         # Create config but no parquet files
         UnitTestHelpers.create_sample_config(config_path)
         
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(RuntimeError):
             app.classify(input_dir, output_dir, config_path)
-        assert exc_info.value.code == 1
     
 
     def test_mismatched_feature_dimensions(self, clean_mounted_dirs):
@@ -191,9 +188,8 @@ class TestClassifyFunction:
         
         output_path = dirs['workspace_output'] / 'output.parquet'
         
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(RuntimeError):
             app.classify(parquet_path, output_path, config_path)
-        assert exc_info.value.code == 1
         
         assert not os.path.exists(output_path)
     
@@ -299,6 +295,132 @@ class TestClassifyFunction:
         This TODO should focus on scale/shape with safe non-sensitive fixture data.
         """
         pass
+
+    def test_classify_table_in_memory_only(self, sample_data):
+        """Classify a preloaded Arrow table without writing output files."""
+        table = sample_data['sample_table']
+        config_path = sample_data['config_path']
+        output_dir = Path(sample_data['output_dir'])
+
+        results = app.classify_table(table, config_path)
+
+        assert len(results) == 1
+        assert results[0].success is True
+        assert results[0].result_table is not None
+        assert results[0].output_path is None
+        assert list(output_dir.rglob('*')) == []
+
+    def test_classify_table_with_output_path(self, sample_data):
+        """Classify a preloaded Arrow table and write outputs using classifier path templating."""
+        table = sample_data['sample_table']
+        config_path = sample_data['config_path']
+        output_base = Path(sample_data['output_dir']) / 'result.parquet'
+        expected_output = Path(sample_data['output_dir']) / 'classifier_0' / 'result.parquet'
+
+        results = app.classify_table(table, config_path, output_path=output_base)
+
+        assert len(results) == 1
+        assert results[0].success is True
+        assert results[0].result_table is not None
+        assert results[0].output_path == expected_output
+        assert expected_output.exists()
+
+    def test_full_output_path_templates_absolute_path_ignores_parent_token(self):
+        """Absolute output paths should inject token unless the absolute path already has one."""
+        absolute_output = Path('/tmp/out/result.csv')
+        output_parent = Path('/tmp/<classifier_name>/base')
+
+        templates = app.full_output_path_templates(
+            [absolute_output],
+            output_parent,
+            [Path('/tmp/input.parquet')],
+        )
+
+        assert templates == [Path('/tmp/out/<classifier_name>/result.csv')]
+
+    def test_process_loaded_table_in_memory_only(self, sample_data):
+        """Shared loaded-table path should support no-write mode."""
+        table = sample_data['sample_table']
+        configs = app.ClassifierConfig.from_any(sample_data['config_path'])
+
+        results = app.process_loaded_table(table, None, configs, source='unit_test')
+
+        assert len(results) == 1
+        assert results[0].success is True
+        assert results[0].output_path is None
+        assert results[0].result_table is not None
+
+    def test_classify_continues_after_unexpected_file_error_single_worker(self, clean_mounted_dirs, monkeypatch):
+        """An unexpected exception for one file should not stop remaining files in serial mode."""
+        dirs = clean_mounted_dirs
+
+        input_dir = dirs['workspace_input']
+        output_dir = dirs['workspace_output']
+        config_path = dirs['workspace_config'] / 'test_config.json'
+
+        UnitTestHelpers.create_sample_parquet(input_dir / 'crash.parquet', num_rows=5)
+        UnitTestHelpers.create_sample_parquet(input_dir / 'ok.parquet', num_rows=5)
+        UnitTestHelpers.create_sample_config(config_path)
+
+        seen_inputs = []
+
+        def fake_process_single_file(input_path, output_path, configs):
+            seen_inputs.append(Path(input_path).name)
+            if Path(input_path).name == 'crash.parquet':
+                raise AssertionError('unexpected crash')
+            return [app.ClassifierResult(success=True, output_path=output_path)]
+
+        monkeypatch.setattr(app, 'process_single_file', fake_process_single_file)
+
+        with pytest.raises(RuntimeError, match='Encountered 1 error\(s\) during processing'):
+            app.classify(input_dir, output_dir, config_path, workers=1)
+
+        assert sorted(seen_inputs) == ['crash.parquet', 'ok.parquet']
+
+    def test_classify_continues_after_unexpected_file_error_multi_worker(self, clean_mounted_dirs, monkeypatch):
+        """An unexpected exception for one file should not stop remaining files in parallel mode."""
+        dirs = clean_mounted_dirs
+
+        input_dir = dirs['workspace_input']
+        output_dir = dirs['workspace_output']
+        config_path = dirs['workspace_config'] / 'test_config.json'
+
+        UnitTestHelpers.create_sample_parquet(input_dir / 'crash.parquet', num_rows=5)
+        UnitTestHelpers.create_sample_parquet(input_dir / 'ok.parquet', num_rows=5)
+        UnitTestHelpers.create_sample_config(config_path)
+
+        seen_inputs = []
+
+        def fake_process_single_file(input_path, output_path, configs):
+            seen_inputs.append(Path(input_path).name)
+            if Path(input_path).name == 'crash.parquet':
+                raise AssertionError('unexpected crash')
+            return [app.ClassifierResult(success=True, output_path=output_path)]
+
+        monkeypatch.setattr(app, 'process_single_file', fake_process_single_file)
+
+        with pytest.raises(RuntimeError, match='Encountered 1 error\(s\) during processing'):
+            app.classify(input_dir, output_dir, config_path, workers=2)
+
+        assert sorted(seen_inputs) == ['crash.parquet', 'ok.parquet']
+
+    def test_classify_dataframe_matches_classify_table(self, sample_data):
+        """DataFrame entrypoint should match classify_table output shape and rows."""
+        pd = pytest.importorskip("pandas")
+
+        table = sample_data['sample_table']
+        df = table.to_pandas()
+        config_path = sample_data['config_path']
+
+        table_results = app.classify_table(table, config_path)
+        dataframe_results = app.classify_dataframe(df, config_path)
+
+        assert len(table_results) == len(dataframe_results) == 1
+        assert dataframe_results[0].success is True
+        assert dataframe_results[0].result_table is not None
+        assert table_results[0].result_table is not None
+        assert dataframe_results[0].result_table.num_rows == table_results[0].result_table.num_rows
+        assert dataframe_results[0].result_table.column_names == table_results[0].result_table.column_names
 
 
 if __name__ == '__main__':

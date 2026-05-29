@@ -9,8 +9,10 @@ Uses pure PyArrow for maximum performance and minimal dependencies.
 
 import argparse
 import concurrent.futures
+from collections import Counter
 import json
 import base64
+import binascii
 from importlib.metadata import PackageNotFoundError, version as get_distribution_version
 import os
 import sys
@@ -24,8 +26,6 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pyarrow.csv as pcsv
-import pyarrow.compute as pc
-import pyarrow.fs as fs
 from urllib.parse import urlparse, urlunparse, ParseResult, parse_qs, urlencode
 from dataclasses import dataclass
 
@@ -37,14 +37,136 @@ logging.basicConfig(
 
 SUPPORTED_EXTENSIONS = ['.parquet', '.csv']
 DEFAULT_OUTPUT_EXTENSION = '.csv'
+ENV_INPUT_PATH = 'EMBEDDINGS_CLASSIFIER_INPUT'
+ENV_OUTPUT_PATH = 'EMBEDDINGS_CLASSIFIER_OUTPUT'
+ENV_CONFIG_PATH = 'EMBEDDINGS_CLASSIFIER_CONFIG'
 
 @dataclass
 class ClassifierResult:
     """Dataclass to hold the result of a classifier run."""
     success: bool
     output_path: Optional[Path] = None
+    result_table: Optional[pa.Table] = None
     message: str = ""
     error: str = ""
+
+
+@dataclass
+class ClassifierConfig:
+    """Normalized classifier configuration container."""
+    configs: List[Dict[str, Any]]
+
+    @staticmethod
+    def _normalize_configs(configs: Any) -> List[Dict[str, Any]]:
+        if not isinstance(configs, list):
+            configs = [configs]
+
+        normalized_configs = []
+
+        for i, config in enumerate(configs):
+            if not isinstance(config, dict):
+                raise ValueError(f"Config at index {i} must be an object")
+
+            # Validate required fields
+            if 'classifier' not in config:
+                # Assume the entire JSON is the classifier and use defaults.
+                if 'classes' not in config:
+                    raise ValueError("Config must contain 'classifier' section")
+                config = {
+                    'classifier': config
+                }
+
+            classifier = config['classifier']
+            required_fields = ['classes', 'beta', 'beta_bias']
+            for field in required_fields:
+                if field not in classifier:
+                    raise ValueError(f"Classifier must contain '{field}' field")
+
+            normalized: Dict[str, Any] = dict(config)
+            normalized['classifier'] = dict(classifier)
+
+            if 'classifier_name' not in normalized:
+                normalized['classifier_name'] = f"classifier_{i}"
+
+            # defaults
+            if 'threshold' not in normalized:
+                normalized['threshold'] = 0.0
+
+            if 'save_empty' not in normalized:
+                normalized['save_empty'] = True
+
+            if 'skip_existing' not in normalized:
+                normalized['skip_existing'] = True
+
+            normalized_configs.append(normalized)
+
+        return normalized_configs
+
+    @classmethod
+    def from_dict(cls, config: Dict[str, Any]) -> "ClassifierConfig":
+        return cls.from_any(config)
+
+    @classmethod
+    def from_json(cls, config_path: Union[str, Path]) -> "ClassifierConfig":
+        with open(config_path, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        return cls.from_any(raw)
+
+    @classmethod
+    def from_any(
+        cls,
+        config_data: Union["ClassifierConfig", Dict[str, Any], List[Dict[str, Any]], str, Path],
+    ) -> "ClassifierConfig":
+        if isinstance(config_data, cls):
+            return config_data
+
+        if isinstance(config_data, (str, Path)):
+            return cls.from_json(config_data)
+
+        if not isinstance(config_data, (dict, list)):
+            raise TypeError(f"Unsupported config type: {type(config_data)}")
+
+        normalized_configs = cls._normalize_configs(config_data)
+        for config in normalized_configs:
+            classifier_config = config['classifier']
+            beta, beta_bias = deserialize_classifier_params(classifier_config)
+            classifier_config['beta'] = beta
+            classifier_config['beta_bias'] = beta_bias
+
+            logging.info("Classes found in config: %s", classifier_config['classes'])
+            logging.info("Beta shape: %s, Beta bias shape: %s", beta.shape, beta_bias.shape)
+
+        return cls(configs=normalized_configs)
+
+    def as_list(self) -> List[Dict[str, Any]]:
+        return self.configs
+
+    def with_output_paths(self, output_path: Optional[Path]) -> List[Dict[str, Any]]:
+        """
+        Create per-classifier config with resolved output paths.
+        Each classifier will produce its own output file, and therefore we 
+        can template the name of the classifier into the output path to have a unique output path
+        for each classifier. 
+        """
+        resolved_paths = [
+            None if output_path is None else construct_output_path(output_path, config['classifier_name'])
+            for config in self.configs
+        ]
+
+        non_none_paths = [path for path in resolved_paths if path is not None]
+        duplicate_paths = sorted(path for path, count in Counter(non_none_paths).items() if count > 1)
+        if duplicate_paths:
+            duplicate_paths_str = ', '.join(str(path) for path in duplicate_paths)
+            raise ValueError(
+                "Multiple classifiers resolve to the same output path(s) after classifier name sanitization: "
+                f"{duplicate_paths_str}."
+            )
+
+        
+        return [
+            {**config, 'output_path': resolved_path}
+            for config, resolved_path in zip(self.configs, resolved_paths)
+        ]
 
 
 
@@ -84,7 +206,7 @@ def parse_arguments():
     )
 
     # --- 'version' subcommand ---
-    parser_version = subparsers.add_parser('version', help="Show the application version")
+    subparsers.add_parser('version', help="Show the application version")
     
     return parser.parse_args()
 
@@ -102,7 +224,7 @@ def get_parsed_url(url: str) -> ParseResult:
     
     # add any env qsps to the url
     env_qsp = os.environ.get('QSP', None)
-    logging.debug(f"Environment QSP: {env_qsp}")
+    logging.debug("Environment QSP: %s", env_qsp)
     if env_qsp:
         query_params = parse_qs(parsed_url.query)
         new_query_params = parse_qs(env_qsp)
@@ -111,7 +233,7 @@ def get_parsed_url(url: str) -> ParseResult:
         new_query_string = urlencode(query_params, doseq=True)
         parsed_url = parsed_url._replace(query=new_query_string)
 
-    logging.info(f"Parsed URL: {urlunparse(parsed_url)}")
+    logging.info("Parsed URL: %s", urlunparse(parsed_url))
 
     return parsed_url
 
@@ -119,62 +241,7 @@ def get_parsed_url(url: str) -> ParseResult:
 
 def load_config(config_path: str) -> List[Dict[str, Any]]:
     """Load and validate configuration file."""
-
-    try:
-
-        with open(config_path, 'r') as f:
-            configs = json.load(f)
-
-        if not isinstance(configs, list):
-            configs = [configs]
-
-        normalized_configs = []
-
-        for i, config in enumerate(configs):
-
-            # Validate required fields
-            if 'classifier' not in config:
-
-                # assume that the entire json is the classifier, and use defaults for # threshold and save_empty
-                if 'classes' not in config:
-                    raise ValueError("Config must contain 'classifier' section")
-                
-                config = {
-                    'classifier': config
-                }
-            
-            classifier = config['classifier']
-            required_fields = ['classes', 'beta', 'beta_bias']
-            for field in required_fields:
-                if field not in classifier:
-                    raise ValueError(f"Classifier must contain '{field}' field")
-                
-            if 'classifier_name' not in config:
-                config['classifier_name'] = f"classifier_{i}"
-                
-            # defaults
-            if 'threshold' not in config:
-                config['threshold'] = 0.0
-
-            if 'save_empty' not in config:
-                config['save_empty'] = True
-
-            if 'skip_existing' not in config:
-                config['skip_existing'] = True
-
-            normalized_configs.append(config)
-
-        return normalized_configs
-
-    except FileNotFoundError:
-        logging.error(f"Error: Config file '{config_path}' not found")
-        sys.exit(1)
-    except json.JSONDecodeError as e:
-        logging.error(f"Error: Invalid JSON in config file: {e}")
-        sys.exit(1)
-    except Exception as e:
-        logging.error(f"Error loading config: {e}")
-        sys.exit(1)
+    return ClassifierConfig.from_json(config_path).as_list()
 
 
 def deserialize_classifier_params(classifier_config: Dict[str, Any]) -> tuple:
@@ -192,15 +259,15 @@ def deserialize_classifier_params(classifier_config: Dict[str, Any]) -> tuple:
         beta_bias = do_decode(classifier_config['beta_bias'])
         return beta, beta_bias
     
-    except Exception as e:
-        logging.error(f"Error deserializing classifier parameters: {e}")
-        sys.exit(1)
+    except (ValueError, TypeError, KeyError, binascii.Error) as e:
+        logging.error("Error deserializing classifier parameters: %s", e)
+        raise ValueError(f"Error deserializing classifier parameters: {e}") from e
 
 
 
 def process_table(
     table: pa.Table, 
-    output_path: Union[str, Path], 
+    output_path: Optional[Union[str, Path]], 
     beta: np.ndarray, 
     beta_bias: np.ndarray,
     classes: list,  # New parameter for the list of class names
@@ -219,7 +286,7 @@ def process_table(
     @return: True if processing was successful, False otherwise
     """
 
-    output_path = Path(output_path)
+    output_path = Path(output_path) if output_path is not None else None
     metadata_columns = ['source', 'channel', 'offset']
 
     result = ClassifierResult(
@@ -230,7 +297,7 @@ def process_table(
     try:
 
         
-        logging.info(f"Processing table: {table.num_rows} rows, {table.num_columns} columns")
+        logging.info("Processing table: %s rows, %s columns", table.num_rows, table.num_columns)
 
         num_feature_cols = len(table.column_names) - len(metadata_columns)
 
@@ -292,24 +359,28 @@ def process_table(
         result_column_names = metadata_columns + ['label', 'score']
         
         result_table = pa.table(result_columns, names=result_column_names)
+        result.result_table = result_table
         
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        if output_path.suffix == '.csv':
-            # Save as CSV if the output path ends with .csv
-            # result_table.to_pandas().to_csv(output_path, index=False)
-            # print(f"Saved results to {output_path}")
-            pcsv.write_csv(result_table, output_path,
-                           write_options=pcsv.WriteOptions(include_header=True))
+        if output_path is not None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            if output_path.suffix == '.csv':
+                # Save as CSV if the output path ends with .csv
+                # result_table.to_pandas().to_csv(output_path, index=False)
+                # print(f"Saved results to {output_path}")
+                pcsv.write_csv(result_table, output_path,
+                               write_options=pcsv.WriteOptions(include_header=True))
+            else:
+                pq.write_table(result_table, output_path)
+            logging.info("Saved results to %s", output_path)
         else:
-            pq.write_table(result_table, output_path)
-        logging.info(f"Saved results to {output_path}")
+            logging.info("No output path provided; returning results in memory only.")
         
         result.success = True
 
         return result
 
-    except Exception as e:
-        logging.error(f"Error processing table: {e}")
+    except (ValueError, TypeError, KeyError, OSError, pa.ArrowInvalid, pa.ArrowTypeError) as e:
+        logging.error("Error processing table: %s", e)
         result.success = False
         result.error = str(e)
         return result
@@ -344,14 +415,14 @@ def get_table_from_path(input_path: Union[Path, ParseResult]) -> Tuple[Optional[
     if isinstance(input_path, Path):
         try:
             table = pq.read_table(input_path)
-        except Exception as e:
-            logging.error(f"Error reading {input_path}: {e}")
+        except (OSError, pa.ArrowInvalid, pa.ArrowTypeError) as e:
+            logging.error("Error reading %s: %s", input_path, e)
             return None, str(e)
 
     elif isinstance(input_path, ParseResult):
         url = urlunparse(input_path)
         try:
-            logging.info(f"Reading from URL: {url}")
+            logging.info("Reading from URL: %s", url)
             # Use explicit connect/read timeouts so workers do not hang indefinitely.
             response = requests.get(url, timeout=(5, 30))
             response.raise_for_status()  # This will raise an HTTPError for bad responses (4xx or 5xx)
@@ -360,14 +431,14 @@ def get_table_from_path(input_path: Union[Path, ParseResult]) -> Tuple[Optional[
 
         except requests.exceptions.RequestException as e:
             # Catch network-related errors from the requests library
-            logging.error(f"Error downloading {url}: {e}")
+            logging.error("Error downloading %s: %s", url, e)
             return None, f"Error downloading {url}: {e}"
-        except Exception as e:
+        except (OSError, pa.ArrowInvalid, pa.ArrowTypeError, ValueError, TypeError) as e:
             # Catch other errors, like pyarrow failing to parse the file
-            logging.error(f"Error processing data from {url}: {e}")
+            logging.error("Error processing data from %s: %s", url, e)
             return None, f"Error processing data from {url}: {e}"
     else:
-        logging.error(f"Error: input_path must be a Path or ParseResult, got {type(input_path)}")
+        logging.error("Error: input_path must be a Path or ParseResult, got %s", type(input_path))
         return None, f"Error: input_path must be a Path or ParseResult, got {type(input_path)}"
     
     return table, None
@@ -376,47 +447,62 @@ def get_table_from_path(input_path: Union[Path, ParseResult]) -> Tuple[Optional[
 
 def process_single_file(
     input_path: Union[Path, ParseResult], 
-    output_path: Path, 
-    configs: List[Dict[str, Any]],
+    output_path: Optional[Path], 
+    configs: ClassifierConfig,
 ) -> List[ClassifierResult]:
     """
     Process a single parquet file
     @param input_path: Path to or url to the input parquet file
-    @param output_path: Path to save the output csv file. This is a template, where 'classifier_name' will be replaced with the classifier name from the config.
+    @param output_path: Optional path template for saving output files. If None, results are returned in memory only.
+    @param configs: Normalized classifier config.
     """
 
-    # Build per-file config views so shared config objects are not mutated across threads.
-    configs_with_outputs = []
-    for config in configs:
-        config_for_file = dict(config)
-        config_for_file['output_path'] = construct_output_path(output_path, config['classifier_name'])
-        configs_with_outputs.append(config_for_file)
+    table, error = get_table_from_path(input_path)
+    if table is None:
+        logging.error("Error reading table from %s: %s", input_path, error)
+        configs_with_outputs = configs.with_output_paths(output_path)
+        fallback_results = [
+            ClassifierResult(
+                success=False,
+                output_path=config['output_path'],
+                error=str(error),
+            )
+            for config in configs_with_outputs
+        ]
+        return fallback_results
+
+    return process_loaded_table(table, output_path, configs, source=str(input_path))
+
+
+def process_loaded_table(
+    table: pa.Table,
+    output_path: Optional[Path],
+    configs: ClassifierConfig,
+    source: str = "in_memory",
+) -> List[ClassifierResult]:
+    """Process a preloaded table for all classifier configs."""
+
+    configs_with_outputs = configs.with_output_paths(output_path)
 
     results = [ClassifierResult(success=False, output_path=config['output_path']) for config in configs_with_outputs]
 
     # return early if everything is done
-    if all(co['output_path'].exists() and co['skip_existing'] for co in configs_with_outputs):
-        logging.info(f"All output files for {input_path} already exist, skipping processing.")
+    if all(
+        co['output_path'] is not None and co['output_path'].exists() and co['skip_existing']
+        for co in configs_with_outputs
+    ):
+        logging.info("All output files for %s already exist, skipping processing.", source)
         for result in results:
             result.success = True
             result.message = f"Output file {result.output_path} already exists, skipping processing."
         return results
 
-
-    table, error = get_table_from_path(input_path)
-    if table is None:
-        logging.error(f"Error reading table from {input_path}: {error}")
-        for result in results:
-            result.success = False
-            result.error = str(error)
-        return results
-
     for i, config in enumerate(configs_with_outputs):
 
-        logging.info(f"Processing: {input_path} -> {output_path}")
+        logging.info("Processing: %s -> %s", source, output_path)
 
-        if config['skip_existing'] and config['output_path'].exists():
-            logging.info(f"Output file {config['output_path']} already exists, skipping processing.")
+        if config['output_path'] is not None and config['skip_existing'] and config['output_path'].exists():
+            logging.info("Output file %s already exists, skipping processing.", config['output_path'])
             results[i] = ClassifierResult(
                 success=True,
                 output_path=config['output_path'],
@@ -424,7 +510,7 @@ def process_single_file(
             )
             continue
       
-        logging.info(f"Processing file: {input_path} for classifier {config['classifier_name']}")
+        logging.info("Processing file: %s for classifier %s", source, config['classifier_name'])
         result = process_table(
             table, config['output_path'], config['classifier']['beta'], config['classifier']['beta_bias'], 
             config['classifier']['classes'], config['threshold'], config['save_empty']
@@ -433,13 +519,51 @@ def process_single_file(
 
     return results
 
+
+def classify_table(
+    table: pa.Table,
+    config: Union[ClassifierConfig, Dict[str, Any], List[Dict[str, Any]], str, Path],
+    output_path: Optional[Union[str, Path]] = None,
+) -> List[ClassifierResult]:
+    """Classify an in-memory Arrow table directly."""
+    if not isinstance(table, pa.Table):
+        raise TypeError(f"Expected pyarrow.Table, got {type(table)}")
+
+    configs = ClassifierConfig.from_any(config)
+    output_path_obj = None
+    if output_path is not None:
+        output_path_obj = full_output_path_templates(
+            [Path(output_path)],
+            Path('.'),
+            [Path('in_memory_table.parquet')],
+        )[0]
+    return process_loaded_table(table, output_path_obj, configs, source="in_memory_table")
+
+
+def classify_dataframe(
+    dataframe: Any,
+    config: Union[ClassifierConfig, Dict[str, Any], List[Dict[str, Any]], str, Path],
+    output_path: Optional[Union[str, Path]] = None,
+) -> List[ClassifierResult]:
+    """Classify a pandas DataFrame by converting it to an Arrow table first."""
+    try:
+        import pandas as pd
+    except ImportError as e:
+        raise ImportError("pandas is required for classify_dataframe") from e
+
+    if not isinstance(dataframe, pd.DataFrame):
+        raise TypeError(f"Expected pandas.DataFrame, got {type(dataframe)}")
+
+    table = pa.Table.from_pandas(dataframe, preserve_index=False)
+    return classify_table(table, config, output_path=output_path)
+
     
 
 
 def get_parquet_files(directory: Union[Path, str]) -> list:
     """Get all parquet files in directory recursively."""
     files = list(Path(directory).rglob('*.parquet'))
-    logging.info(f"Found {len(files)} parquet files")
+    logging.info("Found %s parquet files", len(files))
     return files
 
 
@@ -459,7 +583,7 @@ def read_json_input_file(input_path: Union[Path, str]) -> tuple:
     
     """
     try:
-        with open(input_path, 'r') as f:
+        with open(input_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
         if not isinstance(data, dict):
@@ -483,9 +607,9 @@ def read_json_input_file(input_path: Union[Path, str]) -> tuple:
                 
         return input_paths, output_paths
     
-    except Exception as e:
-        logging.error(f"Error reading JSON input file: {e}")
-        sys.exit(1)
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+        logging.error("Error reading JSON input file: %s", e)
+        raise ValueError(f"Error reading JSON input file: {e}") from e
 
 
 
@@ -527,10 +651,23 @@ def full_output_path_templates(
     output_parent: Path,
     input_paths: List[Union[Path, ParseResult]],
 ) -> List[Path]:
-    # construct an absoulte output path for each input path
-    # if the given output path is relative, everything goes under a folder for each classifier
-    # if the given output path is absolute, the final leaf will be put under a folder for each classifier
-    # unless the output path OR output parent already contains a folder named <classifier_name>
+    """Build one output-path template per input, including classifier token placement.
+
+    Token-placement rules:
+    - Relative output path: inject <classifier_name> at the left side (near the base)
+        unless the relative output path or output_parent already includes the token.
+        Example: outputs/result.csv -> <classifier_name>/outputs/result.csv.
+    - Absolute output path: inject <classifier_name> at the right side (near the leaf)
+        unless the absolute output path already includes the token.
+        Example: /root/outputs/result.csv -> /root/outputs/<classifier_name>/result.csv.
+
+    Rationale:
+    For absolute paths there is no reliable way to infer a caller-intended split point,
+    so classifier injection is anchored at the leaf side for deterministic behavior.
+
+    We need the output path to be templated with the classifier name, because it's possible
+    to have multiple classifiers and each needs to output a separate file.  
+    """
 
 
     full_output_paths = []
@@ -545,7 +682,7 @@ def full_output_path_templates(
             else:
                 full_output_paths.append(output_parent / '<classifier_name>' / op)
         else:
-            if '<classifier_name>' in str(op) or '<classifier_name>' in str(output_parent):
+            if '<classifier_name>' in str(op):
                 full_output_paths.append(op)
             else:
                 full_output_paths.append(op.parent / '<classifier_name>' / op.name)
@@ -564,43 +701,34 @@ def classify(input_path, output_path, config_path, workers=1):
 
     logging.debug('classify command called')
 
-    configs = load_config(config_path)
-
-    for config in configs:
-        classifier_config = config['classifier']
-        beta, beta_bias = deserialize_classifier_params(classifier_config)
-        classifier_config['beta'] = beta
-        classifier_config['beta_bias'] = beta_bias
-    
-        logging.info(f"Classes found in config: {classifier_config['classes']}")
-        logging.info(f"Beta shape: {beta.shape}, Beta bias shape: {beta_bias.shape}")
+    configs = ClassifierConfig.from_any(config_path)
 
     if input_path.is_file():
 
-        logging.info(f"Processing file: {input_path}")
+        logging.info("Processing file: %s", input_path)
 
         if input_path.suffix == '.parquet':
             input_paths = [input_path]
             output_paths = [output_path]
 
         elif input_path.suffix == '.json':
-            logging.info(f"Reading input from JSON file: {input_path}")
+            logging.info("Reading input from JSON file: %s", input_path)
             input_paths, output_paths = read_json_input_file(input_path)
 
         else:
-            logging.error(f"Error: Input file '{input_path}' must be a .parquet or .json file")
-            sys.exit(1)
+            logging.error("Error: Input file '%s' must be a .parquet or .json file", input_path)
+            raise ValueError(f"Input file '{input_path}' must be a .parquet or .json file")
 
     elif input_path.is_dir():
         input_paths = get_parquet_files(input_path)
         if not input_paths:
-            sys.exit(1)
+            raise RuntimeError(f"No parquet files found in input directory: {input_path}")
         output_paths = [file.relative_to(input_path).with_suffix('.csv') for file in input_paths]
 
         
     else:
-        logging.error(f"Error: Input path '{input_path}' does not exist")
-        sys.exit(1)
+        logging.error("Error: Input path '%s' does not exist", input_path)
+        raise FileNotFoundError(f"Input path '{input_path}' does not exist")
                
     success_count = 0
     total_files = len(input_paths)
@@ -612,16 +740,20 @@ def classify(input_path, output_path, config_path, workers=1):
 
     if worker_count == 1:
         for input_path, output_path in zip(input_paths, full_output_paths):
-            file_results = process_single_file(
-                input_path, output_path, configs
-            )
+            try:
+                file_results = process_single_file(
+                    input_path, output_path, configs
+                )
+            except Exception as exc:
+                logging.error("--> FAILED: %s: %s", input_path, exc, exc_info=True)
+                continue
 
             if any([r.success is False for r in file_results]):
-                logging.warning(f"--> FAILED: {input_path}")
+                logging.warning("--> FAILED: %s", input_path)
             else:
                 success_count += 1
     else:
-        logging.info(f"Processing {total_files} files with {worker_count} workers")
+        logging.info("Processing %s files with %s workers", total_files, worker_count)
         with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
             future_to_input = {
                 executor.submit(process_single_file, input_path, output_path, configs): input_path
@@ -633,24 +765,21 @@ def classify(input_path, output_path, config_path, workers=1):
                 try:
                     file_results = future.result()
                 except Exception as exc:
-                    logging.error(f"--> FAILED: {current_input}: {exc}", exc_info=True)
+                    logging.error("--> FAILED: %s: %s", current_input, exc, exc_info=True)
                     continue
 
                 if any([r.success is False for r in file_results]):
-                    logging.warning(f"--> FAILED: {current_input}")
+                    logging.warning("--> FAILED: %s", current_input)
                 else:
                     success_count += 1
 
     logging.info("\n--- PROCESSING SUMMARY ---")
-    logging.info(f"Successfully processed {success_count}/{total_files} files.")
+    logging.info("Successfully processed %s/%s files.", success_count, total_files)
 
     if success_count < total_files:
         failure_count = total_files - success_count
-        logging.warning(
-            f"\nEncountered {failure_count} error(s) during processing. "
-            "Exiting with error code 1."
-        )
-        sys.exit(1)
+        logging.warning("\nEncountered %s error(s) during processing. Exiting with error code 1.", failure_count)
+        raise RuntimeError(f"Encountered {failure_count} error(s) during processing")
 
     logging.info("\nAll files processed successfully.")
             
@@ -658,56 +787,50 @@ def classify(input_path, output_path, config_path, workers=1):
 
 
 def show_version():
-    """Prints version from package metadata, with file fallbacks for dev/container use."""
+    """Print application version from installed package metadata."""
     logging.info("Running 'version' command...")
+
     try:
         print(f"Version: {get_distribution_version('embeddings-classifier')}")
         return
-    except PackageNotFoundError:
-        pass
-
-    version_file_container = Path('/VERSION')
-    version_file_src = Path(__file__).parent.parent / 'VERSION'
-
-    if version_file_container.exists():
-        print(f"Version: {version_file_container.read_text().strip()}")
-        return
-    if version_file_src.exists():
-        print(f"Version: {version_file_src.read_text().strip()}")
-        return
-
-    print("Error: version metadata is unavailable and VERSION file was not found.", file=sys.stderr)
-    sys.exit(1)
-
-
-def using_container():
-    """
-    Check if the script is running inside a container by checking if the 
-    /VERSION exists and matches the source VERSION file.
-    """
-    container_version_file = Path('/VERSION')
-    source_version_file = Path(__file__).parent.parent / 'VERSION'
-    if not container_version_file.exists() or not source_version_file.exists():
-        return False
-    if container_version_file.read_text().strip() != source_version_file.read_text().strip():
-        return False
-    return True
+    except PackageNotFoundError as e:
+        raise RuntimeError(
+            "Version metadata not found. Install the package to use the 'version' command."
+        ) from e
 
 
 def get_paths(args):
     """
-    Return default paths for input, output, and config based on whether running in a container.
+    Resolve CLI input/output/config paths from args, then environment variables.
+
+    Precedence for each path is:
+    1) explicit CLI argument
+    2) environment variable fallback
+
+    Raises:
+        ValueError: if any required path cannot be resolved.
     """
 
-    default_paths = {
-        'input': '/mnt/input',
-        'output': '/mnt/output',
-        'config': '/mnt/config'
-    }
+    input_path = args.input if args.input else os.environ.get(ENV_INPUT_PATH)
+    output_path = args.output if args.output else os.environ.get(ENV_OUTPUT_PATH)
+    config_path = args.config if args.config else os.environ.get(ENV_CONFIG_PATH)
 
-    input_path = args.input if args.input else default_paths['input']
-    output_path = args.output if args.output else default_paths['output']
-    config_path = args.config if args.config else Path(default_paths['config']) / 'config.json'
+    missing = []
+    if input_path is None:
+        missing.append(f"--input or ${ENV_INPUT_PATH}")
+    if output_path is None:
+        missing.append(f"--output or ${ENV_OUTPUT_PATH}")
+    if config_path is None:
+        missing.append(f"--config or ${ENV_CONFIG_PATH}")
+
+    if missing:
+        raise ValueError(
+            "Missing required classify paths. Provide " + ", ".join(missing) + "."
+        )
+
+    assert input_path is not None
+    assert output_path is not None
+    assert config_path is not None
 
     return Path(input_path), Path(output_path), Path(config_path)
 
@@ -715,12 +838,16 @@ def get_paths(args):
 def main():
     """Parses arguments and calls the appropriate function."""
     args = parse_arguments()
-    
-    if args.command == 'classify':
-        input_path, output_path, config_path = get_paths(args)
-        classify(input_path, output_path, config_path, args.workers)
-    elif args.command == 'version':
-        show_version()
+
+    try:
+        if args.command == 'classify':
+            input_path, output_path, config_path = get_paths(args)
+            classify(input_path, output_path, config_path, args.workers)
+        elif args.command == 'version':
+            show_version()
+    except Exception as e:
+        logging.error("Error: %s", e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

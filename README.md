@@ -18,6 +18,75 @@ Then import from Python:
 
 `import embeddings_classifier.app`
 
+## Python API (In-Memory)
+
+The package now supports classifying in-memory data directly, with optional writing to disk.
+
+### Classify an Arrow table (in-memory only)
+
+```python
+import pyarrow as pa
+from embeddings_classifier import classify_table
+
+# table must include metadata columns: source, channel, offset
+table = pa.table({
+  "source": ["file_a.wav"],
+  "channel": [1],
+  "offset": [0.0],
+  "feature_0": [0.1],
+  # ... remaining feature columns
+})
+
+results = classify_table(table, "./config.json")
+
+for r in results:
+  if r.success and r.result_table is not None:
+    print(r.result_table.num_rows)
+```
+
+### Classify an Arrow table and also write output files
+
+```python
+from pathlib import Path
+from embeddings_classifier import classify_table
+
+results = classify_table(
+  table,
+  "./config.json",
+  output_path=Path("./outputs/result.csv"),
+)
+
+# output_path is normalized with the same templating rules as CLI classify:
+# - Relative path: inject <classifier_name> at the base unless already present
+#   (e.g. outputs/result.csv -> <classifier_name>/outputs/result.csv)
+# - Absolute path: inject <classifier_name> near the leaf unless already present
+#   (e.g. /root/outputs/result.csv -> /root/outputs/<classifier_name>/result.csv)
+```
+
+### Classify a pandas DataFrame
+
+```python
+import pandas as pd
+from embeddings_classifier import classify_dataframe
+
+df = pd.DataFrame({
+  "source": ["file_a.wav"],
+  "channel": [1],
+  "offset": [0.0],
+  "feature_0": [0.1],
+  # ... remaining feature columns
+})
+
+results = classify_dataframe(df, "./config.json")
+```
+
+Notes:
+
+- `classify_table` and `classify_dataframe` return a list of `ClassifierResult` (one per classifier).
+- Each `ClassifierResult` may include `result_table` (in-memory output), `output_path`, `success`, and error/message info.
+- If `output_path` is `None`, no files are written.
+- If multiple classifiers resolve to the same output path after classifier-name sanitization, classification raises a `ValueError`.
+
 
 # Getting started
 
@@ -48,7 +117,14 @@ To run:
 
 `docker run --rm -v input_folder:/mnt/input -v output_folder:/mnt/output -v config_file:/mnt/config/config.json <image_name>`
 
-By default, it will classify all parquet files in `/mnt/input ` the input folder, and save the results as csv in `/mnt/output/`, using `/mnt/config.json` as the configuration file. 
+When running the provided Docker image, defaults are supplied through environment variables in the image (`EMBEDDINGS_CLASSIFIER_INPUT`, `EMBEDDINGS_CLASSIFIER_OUTPUT`, `EMBEDDINGS_CLASSIFIER_CONFIG`).
+
+CLI path resolution for `classify` uses this precedence:
+
+1. Explicit CLI args: `--input`, `--output`, `--config`
+2. Environment variables: `EMBEDDINGS_CLASSIFIER_INPUT`, `EMBEDDINGS_CLASSIFIER_OUTPUT`, `EMBEDDINGS_CLASSIFIER_CONFIG`
+
+If a path is missing from both args and environment, the command exits with an error.
 
 # Configuration file
 
@@ -58,11 +134,15 @@ The configuration file contains:
 - classifier: the model, including 
   - the list of classes, 
   - the beta (weights per class)
-    - this is am ascii base64 encoded numpy array of shape (num_classes, embedding_size) 
+    - this is an ascii base64 encoded numpy array of shape `(embedding_size, num_classes)`
   - beta_bias
-    - this is am ascii base64 encoded numpy array of shape (num_classes, ) 
+    - this is an ascii base64 encoded numpy array of shape `(num_classes,)`
   - any model config saved with the model (not implemented yet but this will be included with the results)
 - threshold: the cutoff for the output 
+
+If `classifier_name` is omitted, defaults are assigned as `classifier_0`, `classifier_1`, etc.
+
+Classifier names are sanitized for path insertion by replacing spaces with `_` and removing characters outside `[A-Za-z0-9_-]`.
 
 Examples can be found in `tests/test_data/config`
 

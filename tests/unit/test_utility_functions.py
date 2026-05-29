@@ -34,9 +34,8 @@ class TestUtilityFunctions:
         config_path = tmp_path / "invalid_config.json"
         config_path.write_text("{ invalid json }")
         
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(json.JSONDecodeError):
             app.load_config(str(config_path))
-        assert exc_info.value.code == 1
     
 
     def test_load_config_missing_classifier(self, tmp_path):
@@ -44,9 +43,8 @@ class TestUtilityFunctions:
         config_path = tmp_path / "no_classifier.json"
         config_path.write_text('{"other": "data"}')
         
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(ValueError):
             app.load_config(str(config_path))
-        assert exc_info.value.code == 1
     
 
     def test_load_config_missing_required_fields(self, tmp_path):
@@ -61,15 +59,14 @@ class TestUtilityFunctions:
         }
         config_path.write_text(json.dumps(config_data))
         
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(ValueError):
             app.load_config(str(config_path))
-        assert exc_info.value.code == 1
     
 
     def test_deserialize_classifier_params(self, sample_data):
         """Test deserializing classifier parameters."""
-        config = app.load_config(sample_data['config_path'])
-        beta, beta_bias = app.deserialize_classifier_params(config[0]['classifier'])
+        classifier = sample_data['config']['classifier']
+        beta, beta_bias = app.deserialize_classifier_params(classifier)
         
         assert isinstance(beta, np.ndarray)
         assert isinstance(beta_bias, np.ndarray)
@@ -79,21 +76,14 @@ class TestUtilityFunctions:
 
     def test_deserialize_classifier_params_invalid_base64(self, tmp_path):
         """Test deserializing invalid base64 data."""
-        config_path = tmp_path / "bad_base64_config.json"
-        config_data = {
-            "classifier": {
-                "classes": ["test"],
-                "beta": "invalid_base64!@#",
-                "beta_bias": "also_invalid!@#"
-            }
+        classifier = {
+            "classes": ["test"],
+            "beta": "invalid_base64!@#",
+            "beta_bias": "also_invalid!@#"
         }
-        config_path.write_text(json.dumps(config_data))
-        
-        config = app.load_config(str(config_path))
-        
-        with pytest.raises(SystemExit) as exc_info:
-            app.deserialize_classifier_params(config[0]['classifier'])
-        assert exc_info.value.code == 1
+
+        with pytest.raises(ValueError):
+            app.deserialize_classifier_params(classifier)
     
 
     def test_get_parquet_files(self, clean_mounted_dirs):
@@ -114,3 +104,14 @@ class TestUtilityFunctions:
         assert any('file1.parquet' in f.name for f in parquet_files)
         assert any('file2.parquet' in f.name for f in parquet_files)
         assert not any('readme.txt' in f.name for f in parquet_files)
+
+    def test_with_output_paths_raises_on_sanitized_name_collision(self, sample_data):
+        """Colliding sanitized classifier names should fail fast with a clear error."""
+        config = app.ClassifierConfig.from_any(sample_data['config_path'])
+        second = dict(config.as_list()[0])
+        second['classifier_name'] = 'A_B'
+        config.configs.append(second)
+        config.configs[0]['classifier_name'] = 'A B'
+
+        with pytest.raises(ValueError, match='resolve to the same output path'):
+            config.with_output_paths(Path(sample_data['output_dir']) / '<classifier_name>' / 'result.csv')

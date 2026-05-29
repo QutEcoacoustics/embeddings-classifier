@@ -28,6 +28,10 @@ FROM python:3.11-alpine
 
 RUN apk add --no-cache curl openssl
 
+ENV EMBEDDINGS_CLASSIFIER_INPUT=/mnt/input \
+    EMBEDDINGS_CLASSIFIER_OUTPUT=/mnt/output \
+    EMBEDDINGS_CLASSIFIER_CONFIG=/mnt/config/config.json
+
 # Copy the installed python packages from the builder's global site-packages
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 
