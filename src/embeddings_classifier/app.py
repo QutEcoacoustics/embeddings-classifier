@@ -83,6 +83,7 @@ class ClassifierConfig:
                     raise ValueError(f"Classifier must contain '{field}' field")
 
             normalized: Dict[str, Any] = dict(config)
+            normalized['classifier'] = dict(classifier)
 
             if 'classifier_name' not in normalized:
                 normalized['classifier_name'] = f"classifier_{i}"
@@ -650,12 +651,23 @@ def full_output_path_templates(
     output_parent: Path,
     input_paths: List[Union[Path, ParseResult]],
 ) -> List[Path]:
-    # construct an absoulte output path for each input path
-    # if the given output path is relative, everything goes under a folder for each classifier
-    # if the given output path is absolute, the final leaf will be put under a folder for each classifier
-    # unless token-placement rules already apply:
-    # - relative paths: keep existing token in output path or output parent
-    # - absolute paths: keep existing token in output path only
+    """Build one output-path template per input, including classifier token placement.
+
+    Token-placement rules:
+    - Relative output path: inject <classifier_name> at the left side (near the base)
+        unless the relative output path or output_parent already includes the token.
+        Example: outputs/result.csv -> <classifier_name>/outputs/result.csv.
+    - Absolute output path: inject <classifier_name> at the right side (near the leaf)
+        unless the absolute output path already includes the token.
+        Example: /root/outputs/result.csv -> /root/outputs/<classifier_name>/result.csv.
+
+    Rationale:
+    For absolute paths there is no reliable way to infer a caller-intended split point,
+    so classifier injection is anchored at the leaf side for deterministic behavior.
+
+    We need the output path to be templated with the classifier name, because it's possible
+    to have multiple classifiers and each needs to output a separate file.  
+    """
 
 
     full_output_paths = []

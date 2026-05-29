@@ -56,8 +56,11 @@ results = classify_table(
   output_path=Path("./outputs/result.csv"),
 )
 
-# If output_path includes '<classifier_name>', it will be replaced per classifier.
-# Otherwise, the same output path is used directly.
+# output_path is normalized with the same templating rules as CLI classify:
+# - Relative path: inject <classifier_name> at the base unless already present
+#   (e.g. outputs/result.csv -> <classifier_name>/outputs/result.csv)
+# - Absolute path: inject <classifier_name> near the leaf unless already present
+#   (e.g. /root/outputs/result.csv -> /root/outputs/<classifier_name>/result.csv)
 ```
 
 ### Classify a pandas DataFrame
@@ -82,6 +85,7 @@ Notes:
 - `classify_table` and `classify_dataframe` return a list of `ClassifierResult` (one per classifier).
 - Each `ClassifierResult` may include `result_table` (in-memory output), `output_path`, `success`, and error/message info.
 - If `output_path` is `None`, no files are written.
+- If multiple classifiers resolve to the same output path after classifier-name sanitization, classification raises a `ValueError`.
 
 
 # Getting started
@@ -130,11 +134,15 @@ The configuration file contains:
 - classifier: the model, including 
   - the list of classes, 
   - the beta (weights per class)
-    - this is am ascii base64 encoded numpy array of shape (num_classes, embedding_size) 
+    - this is an ascii base64 encoded numpy array of shape `(embedding_size, num_classes)`
   - beta_bias
-    - this is am ascii base64 encoded numpy array of shape (num_classes, ) 
+    - this is an ascii base64 encoded numpy array of shape `(num_classes,)`
   - any model config saved with the model (not implemented yet but this will be included with the results)
 - threshold: the cutoff for the output 
+
+If `classifier_name` is omitted, defaults are assigned as `classifier_0`, `classifier_1`, etc.
+
+Classifier names are sanitized for path insertion by replacing spaces with `_` and removing characters outside `[A-Za-z0-9_-]`.
 
 Examples can be found in `tests/test_data/config`
 
