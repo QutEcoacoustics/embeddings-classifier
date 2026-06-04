@@ -1,5 +1,6 @@
 
 import json
+import copy
 from pathlib import Path
 import pytest
 
@@ -159,3 +160,49 @@ class TestUtilityFunctions:
 
         with pytest.raises(ValueError, match='resolve to the same output path'):
             app.init_items(configs, Path(sample_data['output_dir']) / '<classifier_name>' / 'result.csv')
+
+    def test_build_threshold_array_scalar(self):
+        classes = ['a', 'b']
+        result = app.build_threshold_array(classes, 0.25)
+        np.testing.assert_allclose(result, np.array([0.25, 0.25], dtype=np.float32))
+
+    def test_build_threshold_array_none(self):
+        classes = ['a', 'b']
+        result = app.build_threshold_array(classes, None)
+        expected = np.array([np.finfo(np.float32).min, np.finfo(np.float32).min], dtype=np.float32)
+        np.testing.assert_allclose(result, expected)
+
+    def test_build_threshold_array_list_and_length_validation(self):
+        classes = ['a', 'b']
+        result = app.build_threshold_array(classes, [0.1, None])
+        expected = np.array([0.1, np.finfo(np.float32).min], dtype=np.float32)
+        np.testing.assert_allclose(result, expected)
+
+        with pytest.raises(ValueError, match='Threshold list length'):
+            app.build_threshold_array(classes, [0.1])
+
+    def test_build_threshold_array_dict_with_missing_and_none(self):
+        classes = ['a', 'b', 'c']
+        result = app.build_threshold_array(classes, {'a': 0.2, 'b': None})
+        expected = np.array([0.2, np.finfo(np.float32).min, 0.0], dtype=np.float32)
+        np.testing.assert_allclose(result, expected)
+
+    def test_build_threshold_array_invalid_types(self):
+        classes = ['a']
+
+        with pytest.raises(TypeError, match='Threshold must be one of'):
+            app.build_threshold_array(classes, 'bad')
+
+        with pytest.raises(TypeError, match="Threshold for class 'a' must be a number or None"):
+            app.build_threshold_array(classes, {'a': 'bad'})
+
+    def test_from_any_does_not_mutate_input_with_threshold_array(self, sample_data):
+        raw = copy.deepcopy(sample_data['config'])
+
+        assert 'threshold_array' not in raw
+
+        normalized = app.ClassifierConfig.from_any(raw).as_list()[0]
+
+        assert 'threshold_array' in normalized
+        assert isinstance(normalized['threshold_array'], np.ndarray)
+        assert 'threshold_array' not in raw

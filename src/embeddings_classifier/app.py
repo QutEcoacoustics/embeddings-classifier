@@ -86,10 +86,7 @@ class ClassifierItem:
 
 
 
-    def __init__(self, **kwargs):
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
+    def __post_init__(self):
         # set the output path for this item, based on the output_path_template and the classifier name in the config.
         self.construct_output_path()
 
@@ -191,9 +188,11 @@ class ClassifierConfig:
             normalized: Dict[str, Any] = dict(config)
             normalized['classifier'] = dict(classifier)
 
-            # defaults
-            if 'threshold' not in normalized:
-                normalized['threshold'] = 0.0
+            # Canonical per-class threshold array is computed once at normalization.
+            normalized['threshold_array'] = build_threshold_array(
+                normalized['classifier']['classes'],
+                normalized.get('threshold', 0.0),
+            )
 
             if 'save_empty' not in normalized:
                 normalized['save_empty'] = True
@@ -246,11 +245,6 @@ class ClassifierConfig:
 
     def as_list(self) -> List[Dict[str, Any]]:
         return self.configs
-
-
-
-
-
 
 
 
@@ -345,38 +339,83 @@ def deserialize_classifier_params(classifier_config: Dict[str, Any]) -> tuple:
         raise ValueError(f"Error deserializing classifier parameters: {e}") from e
 
 
+def build_threshold_array(classes: List[str], threshold: Any) -> np.ndarray:
+    """Return one float32 threshold per class.
+
+    Accepted threshold formats:
+    - scalar number: applied to all classes
+    - None: no threshold for all classes
+    - list: one value per class (number or None)
+    - dict: class -> value (number or None); missing classes default to 0.0
+    """
+
+    default_threshold = 0.0
+
+    # Canonicalize thresholds so we always have one value per class.
+    # Allowed per-class values are float (enforce threshold) or None (no threshold for that class).
+    if isinstance(threshold, dict):
+        # Missing classes default to 0.0 for consistency with existing behavior.
+        per_class_thresholds = {cls: threshold.get(cls, default_threshold) for cls in classes}
+    elif isinstance(threshold, list):
+        if len(threshold) != len(classes):
+            raise ValueError(
+                f"Threshold list length ({len(threshold)}) must match number of classes ({len(classes)})"
+            )
+        per_class_thresholds = dict(zip(classes, threshold))
+    elif threshold is None or isinstance(threshold, (int, float, np.integer, np.floating)):
+        per_class_thresholds = {cls: threshold for cls in classes}
+    else:
+        raise TypeError(
+            "Threshold must be one of: float/int, None, list (one per class), "
+            "or dict mapping class name to threshold."
+        )
+
+    for cls, value in per_class_thresholds.items():
+        if value is None:
+            continue
+        if not isinstance(value, (int, float, np.integer, np.floating)):
+            raise TypeError(
+                f"Threshold for class '{cls}' must be a number or None, got {type(value).__name__}."
+            )
+        per_class_thresholds[cls] = float(value)
+
+    # None means no threshold for that class, so use the minimum float32 sentinel.
+    return np.array(
+        [
+            np.finfo(np.float32).min if per_class_thresholds[cls] is None else per_class_thresholds[cls]
+            for cls in classes
+        ],
+        dtype=np.float32,
+    )
+
+
 
 def process_table(
-    table: pa.Table, 
+    table: pa.Table,
     item: ClassifierItem,
-    # output_path: Optional[Union[str, Path]], 
-    # beta: np.ndarray, 
-    # beta_bias: np.ndarray,
-    # classes: list,
-    # threshold: Union[float, list, dict] = 0.0,
-    # save_empty: bool = True,
-
-):
+) -> None:
     """
-    Process a single parquet file
-    @param input_path: Path to the input parquet file
-    @param output_path: Path to save the output csv file
-    @param beta: Classifier weights as a numpy array
-    @param beta_bias: Classifier bias as a numpy array
-    @param classes: List of class names for classification
-    @param threshold: Classification threshold (float for all classes, or list or dict of floats for threshold per class) (default 0.0)
-    @param save_empty: Whether to save empty results (default True)
-    @return: True if processing was successful, False otherwise
+    Process one table for a single classifier item.
+
+    This function mutates ``item`` in place:
+    - sets ``item.result_table``
+    - sets ``item.success``
+    - populates ``item.message`` or ``item.error``
+    - optionally writes output to ``item.output_path``
     """
 
     output_path = Path(item.output_path) if item.output_path is not None else None
     metadata_columns = ['source', 'channel', 'offset']
 
-    # extract classifier parameters from the config for this item for convenience. 
+    # classifier parameters from the config
     beta = item.config['classifier']['beta']
     beta_bias = item.config['classifier']['beta_bias']
     classes = item.config['classifier']['classes']
-    threshold = item.config['threshold']
+
+    # threshold array was previously built from the config threshold parameter during normalization
+    threshold_array = item.config['threshold_array']
+
+    # whether to save an output file even if no scores pass the threshold
     save_empty = item.config['save_empty']
 
     try:
@@ -400,20 +439,6 @@ def process_table(
         # produces a (num_rows, num_classes) matrix
         scores = features @ beta + beta_bias
 
-        if isinstance(threshold, float):
-            threshold_array = np.full(len(classes), threshold, dtype=np.float32)
-        elif isinstance(threshold, list):
-            if len(threshold) != len(classes):
-                raise ValueError(f"Threshold list length ({len(threshold)}) must match number of classes ({len(classes)})")
-            threshold_array = np.array(threshold, dtype=np.float32)
-        elif isinstance(threshold, dict):
-            # for each class in the threshold dict, use its specified threshold, otherwise use 0.0
-            threshold_array = np.array([threshold.get(cls, 0.0) for cls in classes], dtype=np.float32)
-        elif threshold is None:
-            threshold_array = np.full(len(classes), np.finfo(np.float32).min, dtype=np.float32)
-        else:
-            raise TypeError("Threshold must be a float or a list of floats")
-        
         above_threshold_mask = scores >= threshold_array
         # This gives us two 1D arrays: one for the row index, one for the class index
         passing_row_indices, passing_class_indices = np.where(above_threshold_mask)
@@ -422,7 +447,7 @@ def process_table(
             logging.info("No scores passed the threshold. No output file will be created.")
             item.success = True
             item.message = "No scores passed the threshold. No output file was created."
-            return item
+            return
         
         scores_long = scores[passing_row_indices, passing_class_indices]
         classes_long = np.array(classes)[passing_class_indices]
@@ -840,7 +865,7 @@ def classify(input_path, output_path, config_path, workers=1):
             except Exception as exc:
                 logging.error("--> FAILED: %s: %s", input_path, exc, exc_info=True)
             else:
-                if any([r.success is False for r in file_results]):
+                if any((not r.success) for r in file_results):
                     logging.warning("--> FAILED: %s", input_path)
                 else:
                     success_count += 1
@@ -863,7 +888,7 @@ def classify(input_path, output_path, config_path, workers=1):
                 except Exception as exc:
                     logging.error("--> FAILED: %s: %s", current_input, exc, exc_info=True)
                 else:
-                    if any([r.success is False for r in file_results]):
+                    if any((not r.success) for r in file_results):
                         logging.warning("--> FAILED: %s", current_input)
                     else:
                         success_count += 1
