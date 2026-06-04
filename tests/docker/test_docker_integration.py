@@ -1,19 +1,10 @@
 import subprocess
 import os
 import shutil
-import sys
 from pathlib import Path
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 from helpers import TestHelpers
-
-
-def _classifier_folder(config_path):
-    """Resolve the output subfolder name for the first classifier in a config."""
-    import embeddings_classifier.app as app
-    configs = app.ClassifierConfig.from_any(config_path).as_list()
-    return app.resolve_classifier_name(configs[0], 0)
 
 # The image name we'll use for testing
 TEST_IMAGE_NAME = "crane-linear-model-runner:test"
@@ -86,8 +77,7 @@ def test_docker_run_produces_output_with_params(docker_image, clean_mounted_dirs
 
     subprocess.run(run_command, check=True)
     
-    classifier_folder = _classifier_folder(host_folder / 'my_config.json')
-    expected_output_file = host_folder / classifier_folder / 'hi_mum.csv'
+    expected_output_file = host_folder / 'yellow-bellied_glider' / 'hi_mum.csv'
     assert expected_output_file.exists(), "Output file was not created!"
     assert expected_output_file.stat().st_size > 0, "Output file is empty!"
 
@@ -112,7 +102,6 @@ def test_docker_run_uses_default_paths(docker_image, clean_mounted_dirs):
     
     stdout, stderr = TestHelpers.sys_command(run_command)
 
-    classifier_folder = _classifier_folder(CONFIG_DIR / 'config.json')
-    expected_output_file = OUTPUT_DIR / classifier_folder / '3757025.csv'
+    expected_output_file = OUTPUT_DIR / 'yellow-bellied_glider' / '3757025.csv'
     assert expected_output_file.exists(), "Output file was not created in the default location!"
 
