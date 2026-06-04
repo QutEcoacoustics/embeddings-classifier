@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 env:
-  ECOSOUNDS_API_TOKEN: ${{ secrets.ECOSOUNDS_API_TOKEN }}
+  BAW_AUTH_TOKEN: ${{ secrets.BAW_AUTH_TOKEN }}
 
 jobs:
   release:
@@ -55,7 +55,7 @@ jobs:
       - name: Preflight install and tests
         if: steps.version.outputs.changed == 'true'
         env:
-          BAW_AUTH_TOKEN: ${{ secrets.ECOSOUNDS_API_TOKEN }}
+          BAW_AUTH_TOKEN: ${{ secrets.BAW_AUTH_TOKEN }}
         run: |
           python -m pip install --upgrade pip
           pip install numpy pyarrow pytest pytest-cov pytest-mock
@@ -77,6 +77,30 @@ jobs:
         run: |
           git tag -a "v${{ steps.version.outputs.new_version }}" -m "Release v${{ steps.version.outputs.new_version }}"
           git push origin "v${{ steps.version.outputs.new_version }}"
+
+      - name: Set up Docker Buildx
+        if: steps.version.outputs.changed == 'true' && github.ref_name == 'main' && !inputs.dry_run
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: steps.version.outputs.changed == 'true' && github.ref_name == 'main' && !inputs.dry_run
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        if: steps.version.outputs.changed == 'true' && github.ref_name == 'main' && !inputs.dry_run
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            qutecoacoustics/crane-linear-model-runner:${{ steps.version.outputs.new_version }}
+            qutecoacoustics/crane-linear-model-runner:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Create GitHub release
         if: steps.version.outputs.changed == 'true' && github.ref_name == 'main' && !inputs.dry_run

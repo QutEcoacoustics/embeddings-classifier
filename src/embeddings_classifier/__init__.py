@@ -3,11 +3,10 @@
 from importlib.metadata import PackageNotFoundError, version
 from .app import (
     ClassifierConfig,
-    ClassifierResult,
+    ClassifierItem,
     classify,
     classify_dataframe,
-    classify_table,
-    process_single_file,
+    classify_table
 )
 
 try:
@@ -18,9 +17,8 @@ except PackageNotFoundError:
 __all__ = [
     "__version__",
     "ClassifierConfig",
-    "ClassifierResult",
+    "ClassifierItem",
     "classify",
     "classify_table",
-    "classify_dataframe",
-    "process_single_file",
+    "classify_dataframe"
 ]

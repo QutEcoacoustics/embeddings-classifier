@@ -9,7 +9,7 @@ Uses pure PyArrow for maximum performance and minimal dependencies.
 
 import argparse
 import concurrent.futures
-from collections import Counter
+from collections import Counter, deque
 import json
 import base64
 import binascii
@@ -17,9 +17,12 @@ from importlib.metadata import PackageNotFoundError, version as get_distribution
 import os
 import sys
 import logging
+import threading
+import time
 from pathlib import Path
 from typing import Dict, Any, Union, List, Optional, Tuple
 import requests
+from requests.adapters import HTTPAdapter
 import io
 import re
 import numpy as np
@@ -41,14 +44,117 @@ ENV_INPUT_PATH = 'EMBEDDINGS_CLASSIFIER_INPUT'
 ENV_OUTPUT_PATH = 'EMBEDDINGS_CLASSIFIER_OUTPUT'
 ENV_CONFIG_PATH = 'EMBEDDINGS_CLASSIFIER_CONFIG'
 
+# Keep one HTTP session per worker thread so repeated URL fetches can reuse
+# established connections (TCP/TLS keep-alive) and reduce per-item latency.
+_thread_local_http = threading.local()
+
+
+def _get_http_session() -> requests.Session:
+    session = getattr(_thread_local_http, "session", None)
+    if session is None:
+        session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=64, pool_maxsize=64, max_retries=0)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        _thread_local_http.session = session
+    return session
+
 @dataclass
-class ClassifierResult:
-    """Dataclass to hold the result of a classifier run."""
-    success: bool
+class ClassifierItem:
+    """Dataclass to hold the result, config, outputpath of a classifier run on a single item."""
+
+    # the normalized config for one single classifier
+    config: Dict
+
+    # the output path template (including the <classifier_name> placeholder)
+    output_path_template: Optional[Path] = None
+
+    # did the classification run successfully
+    success: bool = False
+
+    # the resolved output path for this item 
     output_path: Optional[Path] = None
+
+    # will be populated with the actual classification results table
     result_table: Optional[pa.Table] = None
+
+    # any message to be returned, such as "skipped because output file already exists"
     message: str = ""
+
+    # any error message if success is False
     error: str = ""
+
+
+
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+        # set the output path for this item, based on the output_path_template and the classifier name in the config.
+        self.construct_output_path()
+
+        if self.output_path is not None and self.config.get('skip_existing', True) and self.output_path.exists():
+            self.success = True
+            self.message = f"Output file {self.output_path} already exists, skipping processing."
+
+    def construct_output_path(self):
+        """
+        replaces the folder "classifier_name" in the output path template with the actual classifier name.
+        """
+
+        if self.output_path_template is None:
+            self.output_path = None
+            return
+        
+        output_path_template = self.output_path_template
+        classifier_name = self.config['classifier_name']
+
+        # use absolute paths for easier debugging
+        if not output_path_template.is_absolute():
+            output_path_template = Path.cwd() / output_path_template
+
+        # sanitize the classifier name to be a valid folder name
+        # replace spaces with underscore and remove everything except [A-Za-z0-9_-]
+        classifier_name = re.sub(r'\s+', '_', classifier_name)
+        classifier_name = re.sub(r'[^A-Za-z0-9_-]', '', classifier_name)
+
+        # replace the last part of the path with the classifier name
+        self.output_path = Path(str(output_path_template).replace('<classifier_name>', classifier_name))
+        
+
+
+
+def check_output_clashes(resolved_paths):
+    """
+    for an item's resolved output paths (one per classifier), checks that there were no clashes
+    due to duplicate sanitized classifier names. Prevants overwriting results files by multiple classifiers
+    """
+
+    non_none_paths = [path for path in resolved_paths if path is not None]
+    duplicate_paths = sorted(path for path, count in Counter(non_none_paths).items() if count > 1)
+    if duplicate_paths:
+        duplicate_paths_str = ', '.join(str(path) for path in duplicate_paths)
+        raise ValueError(
+            "Multiple classifiers resolve to the same output path(s) after classifier name sanitization: "
+            f"{duplicate_paths_str}."
+        )
+
+
+def resolve_classifier_name(config: Dict[str, Any], index: int) -> str:
+    """Resolve classifier name from config with deterministic fallbacks."""
+    configured_name = config.get('classifier_name') or config.get('name')
+    if isinstance(configured_name, str) and configured_name.strip():
+        return configured_name.strip()
+
+    classes = config.get('classifier', {}).get('classes', [])
+    if isinstance(classes, list) and len(classes) == 1:
+        class_name = re.sub(r'\s+', '_', str(classes[0]).strip().lower())
+        return class_name if class_name else f"classifier_{index}"
+
+    if isinstance(classes, list) and len(classes) > 1:
+        return f"classifier_{index}_{len(classes)}class"
+
+    return f"classifier_{index}"
 
 
 @dataclass
@@ -85,9 +191,6 @@ class ClassifierConfig:
             normalized: Dict[str, Any] = dict(config)
             normalized['classifier'] = dict(classifier)
 
-            if 'classifier_name' not in normalized:
-                normalized['classifier_name'] = f"classifier_{i}"
-
             # defaults
             if 'threshold' not in normalized:
                 normalized['threshold'] = 0.0
@@ -97,6 +200,9 @@ class ClassifierConfig:
 
             if 'skip_existing' not in normalized:
                 normalized['skip_existing'] = True
+
+            # Canonical classifier name is resolved once during normalization.
+            normalized['classifier_name'] = resolve_classifier_name(normalized, i)
 
             normalized_configs.append(normalized)
 
@@ -141,32 +247,7 @@ class ClassifierConfig:
     def as_list(self) -> List[Dict[str, Any]]:
         return self.configs
 
-    def with_output_paths(self, output_path: Optional[Path]) -> List[Dict[str, Any]]:
-        """
-        Create per-classifier config with resolved output paths.
-        Each classifier will produce its own output file, and therefore we 
-        can template the name of the classifier into the output path to have a unique output path
-        for each classifier. 
-        """
-        resolved_paths = [
-            None if output_path is None else construct_output_path(output_path, config['classifier_name'])
-            for config in self.configs
-        ]
 
-        non_none_paths = [path for path in resolved_paths if path is not None]
-        duplicate_paths = sorted(path for path, count in Counter(non_none_paths).items() if count > 1)
-        if duplicate_paths:
-            duplicate_paths_str = ', '.join(str(path) for path in duplicate_paths)
-            raise ValueError(
-                "Multiple classifiers resolve to the same output path(s) after classifier name sanitization: "
-                f"{duplicate_paths_str}."
-            )
-
-        
-        return [
-            {**config, 'output_path': resolved_path}
-            for config, resolved_path in zip(self.configs, resolved_paths)
-        ]
 
 
 
@@ -267,12 +348,14 @@ def deserialize_classifier_params(classifier_config: Dict[str, Any]) -> tuple:
 
 def process_table(
     table: pa.Table, 
-    output_path: Optional[Union[str, Path]], 
-    beta: np.ndarray, 
-    beta_bias: np.ndarray,
-    classes: list,  # New parameter for the list of class names
-    threshold: Union[float, list, dict] = 0.0,
-    save_empty: bool = True
+    item: ClassifierItem,
+    # output_path: Optional[Union[str, Path]], 
+    # beta: np.ndarray, 
+    # beta_bias: np.ndarray,
+    # classes: list,
+    # threshold: Union[float, list, dict] = 0.0,
+    # save_empty: bool = True,
+
 ):
     """
     Process a single parquet file
@@ -286,16 +369,17 @@ def process_table(
     @return: True if processing was successful, False otherwise
     """
 
-    output_path = Path(output_path) if output_path is not None else None
+    output_path = Path(item.output_path) if item.output_path is not None else None
     metadata_columns = ['source', 'channel', 'offset']
 
-    result = ClassifierResult(
-        success=False,
-        output_path=output_path
-    )
+    # extract classifier parameters from the config for this item for convenience. 
+    beta = item.config['classifier']['beta']
+    beta_bias = item.config['classifier']['beta_bias']
+    classes = item.config['classifier']['classes']
+    threshold = item.config['threshold']
+    save_empty = item.config['save_empty']
 
     try:
-
         
         logging.info("Processing table: %s rows, %s columns", table.num_rows, table.num_columns)
 
@@ -336,9 +420,9 @@ def process_table(
 
         if len(passing_row_indices) == 0 and not save_empty:
             logging.info("No scores passed the threshold. No output file will be created.")
-            result.success = True
-            result.message = "No scores passed the threshold. No output file was created."
-            return result
+            item.success = True
+            item.message = "No scores passed the threshold. No output file was created."
+            return item
         
         scores_long = scores[passing_row_indices, passing_class_indices]
         classes_long = np.array(classes)[passing_class_indices]
@@ -359,7 +443,7 @@ def process_table(
         result_column_names = metadata_columns + ['label', 'score']
         
         result_table = pa.table(result_columns, names=result_column_names)
-        result.result_table = result_table
+        item.result_table = result_table
         
         if output_path is not None:
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -375,33 +459,15 @@ def process_table(
         else:
             logging.info("No output path provided; returning results in memory only.")
         
-        result.success = True
-
-        return result
+        item.success = True
 
     except (ValueError, TypeError, KeyError, OSError, pa.ArrowInvalid, pa.ArrowTypeError) as e:
         logging.error("Error processing table: %s", e)
-        result.success = False
-        result.error = str(e)
-        return result
+        item.success = False
+        item.error = str(e)
 
 
-def construct_output_path(output_path_template: Path, classifier_name):
-    """
-    replaces the folder "classifier_name" in the output path template with the actual classifier name.
-    """
-    if not output_path_template.is_absolute():
-        output_path_template = Path.cwd() / output_path_template
 
-    # sanitize the classifier name to be a valid folder name
-    # replace spaces with underscore and remove everything except [A-Za-z0-9_-]
-    classifier_name = re.sub(r'\s+', '_', classifier_name)
-    classifier_name = re.sub(r'[^A-Za-z0-9_-]', '', classifier_name)
-
-    # replace the last part of the path with the classifier name
-    output_path = Path(str(output_path_template).replace('<classifier_name>', classifier_name))
-    
-    return output_path
 
 
 def get_table_from_path(input_path: Union[Path, ParseResult]) -> Tuple[Optional[pa.Table], Optional[str]]:
@@ -424,7 +490,7 @@ def get_table_from_path(input_path: Union[Path, ParseResult]) -> Tuple[Optional[
         try:
             logging.info("Reading from URL: %s", url)
             # Use explicit connect/read timeouts so workers do not hang indefinitely.
-            response = requests.get(url, timeout=(5, 30))
+            response = _get_http_session().get(url, timeout=(5, 30))
             response.raise_for_status()  # This will raise an HTTPError for bad responses (4xx or 5xx)
             buffer = io.BytesIO(response.content)
             table = pq.read_table(buffer)
@@ -445,106 +511,130 @@ def get_table_from_path(input_path: Union[Path, ParseResult]) -> Tuple[Optional[
 
 
 
-def process_single_file(
-    input_path: Union[Path, ParseResult], 
-    output_path: Optional[Path], 
+# def process_single_file(
+#     input_path: Union[Path, ParseResult], 
+#     output_path: Optional[Path], 
+#     configs: ClassifierConfig,
+# ) -> List[ClassifierResult]:
+#     """
+#     Process a single parquet file
+#     @param input_path: Path to or url to the input parquet file
+#     @param output_path: Optional path template for saving output files. If None, results are returned in memory only.
+#     @param configs: Normalized classifier config.
+#     """
+
+#     table, error = get_table_from_path(input_path)
+#     results, config_with_outputputs = init_file
+#     if table is None:
+#         logging.error("Error reading table from %s: %s", input_path, error)
+#         configs_with_outputs = configs.with_output_paths(output_path)
+#         fallback_results = [
+#             ClassifierResult(
+#                 success=False,
+#                 output_path=config['output_path'],
+#                 error=str(error),
+#             )
+#             for config in configs_with_outputs
+#         ]
+#         return fallback_results
+
+#     return _process_loaded_table(table, output_path, configs, source=str(input_path))
+
+def init_items(
     configs: ClassifierConfig,
-) -> List[ClassifierResult]:
+    output_path_template: Optional[Path],
+) -> List[ClassifierItem]:
     """
-    Process a single parquet file
-    @param input_path: Path to or url to the input parquet file
-    @param output_path: Optional path template for saving output files. If None, results are returned in memory only.
-    @param configs: Normalized classifier config.
+    initializes a list of classifier items for a single file one per classifier 
+
+    otuput_path_template is only for loggging message
     """
+    items = [
+        ClassifierItem(output_path_template=output_path_template, config=config)
+        for config in configs.as_list()
+    ]
 
-    table, error = get_table_from_path(input_path)
-    if table is None:
-        logging.error("Error reading table from %s: %s", input_path, error)
-        configs_with_outputs = configs.with_output_paths(output_path)
-        fallback_results = [
-            ClassifierResult(
-                success=False,
-                output_path=config['output_path'],
-                error=str(error),
-            )
-            for config in configs_with_outputs
-        ]
-        return fallback_results
+    check_output_clashes([item.output_path for item in items])     
 
-    return process_loaded_table(table, output_path, configs, source=str(input_path))
+    if all(item.success for item in items):
+        logging.info("All output files for %s already exist, skipping processing.", output_path_template)
+    return items
 
 
-def process_loaded_table(
-    table: pa.Table,
-    output_path: Optional[Path],
+def _process_single_input(
+    input: Union[pa.Table, Path, ParseResult],
+    output_path_template: Optional[Path],
     configs: ClassifierConfig,
-    source: str = "in_memory",
-) -> List[ClassifierResult]:
-    """Process a preloaded table for all classifier configs."""
+) -> List[ClassifierItem]:
+    """Process a preloaded table, filepath or URL for all classifier configs."""
+ 
+    # get a dict for each classifier that includes the output path for that classifier for this file. 
+    
+    # initialise a list of results (1 for each classifier, that shows success if already exists)
+    items = init_items(configs, output_path_template)
 
-    configs_with_outputs = configs.with_output_paths(output_path)
+    # return early
+    if all(item.success for item in items):
+        return items
+    
+    # load the table if we were given a path or ParseResult instead of a preloaded table
+    if not isinstance(input, pa.Table):
+        source = str(input)
+        table, error = get_table_from_path(input)
+        if table is None:
+            logging.error("Error reading table from %s: %s", input, error)
+            # for any item that doesn't have results already, set the error message
+            for item in items:
+                if not item.success: 
+                    item.error = str(error)
+            return items
+    else:
+        source = "in_mem_table"
+        table = input
 
-    results = [ClassifierResult(success=False, output_path=config['output_path']) for config in configs_with_outputs]
+    for item in items:
 
-    # return early if everything is done
-    if all(
-        co['output_path'] is not None and co['output_path'].exists() and co['skip_existing']
-        for co in configs_with_outputs
-    ):
-        logging.info("All output files for %s already exist, skipping processing.", source)
-        for result in results:
-            result.success = True
-            result.message = f"Output file {result.output_path} already exists, skipping processing."
-        return results
+        logging.info("Processing: %s -> %s", source, item.output_path)
 
-    for i, config in enumerate(configs_with_outputs):
-
-        logging.info("Processing: %s -> %s", source, output_path)
-
-        if config['output_path'] is not None and config['skip_existing'] and config['output_path'].exists():
-            logging.info("Output file %s already exists, skipping processing.", config['output_path'])
-            results[i] = ClassifierResult(
-                success=True,
-                output_path=config['output_path'],
-                message=f"Output file {config['output_path']} already exists, skipping processing."
-            )
+        if item.success:
+            # already exists, skipping
             continue
       
-        logging.info("Processing file: %s for classifier %s", source, config['classifier_name'])
-        result = process_table(
-            table, config['output_path'], config['classifier']['beta'], config['classifier']['beta_bias'], 
-            config['classifier']['classes'], config['threshold'], config['save_empty']
+        logging.info("Processing file: %s for classifier %s", source, item.config['classifier_name'])
+        # updates item results in place
+        process_table(
+            table, 
+            item=item
         )
-        results[i] = result
 
-    return results
+    return items
 
 
 def classify_table(
     table: pa.Table,
     config: Union[ClassifierConfig, Dict[str, Any], List[Dict[str, Any]], str, Path],
     output_path: Optional[Union[str, Path]] = None,
-) -> List[ClassifierResult]:
+) -> List[ClassifierItem]:
     """Classify an in-memory Arrow table directly."""
     if not isinstance(table, pa.Table):
         raise TypeError(f"Expected pyarrow.Table, got {type(table)}")
 
     configs = ClassifierConfig.from_any(config)
-    output_path_obj = None
+    output_path_template = None
     if output_path is not None:
-        output_path_obj = full_output_path_templates(
+        output_path_template = get_full_output_path_templates(
             [Path(output_path)],
             Path('.'),
             [Path('in_memory_table.parquet')],
         )[0]
-    return process_loaded_table(table, output_path_obj, configs, source="in_memory_table")
+    return _process_single_input(table, output_path_template=output_path_template, configs=configs)
 
 
 def classify_dataframe(
     dataframe: Any,
     config: Union[ClassifierConfig, Dict[str, Any], List[Dict[str, Any]], str, Path],
     output_path: Optional[Union[str, Path]] = None,
-) -> List[ClassifierResult]:
+) -> List[ClassifierItem]:
     """Classify a pandas DataFrame by converting it to an Arrow table first."""
     try:
         import pandas as pd
@@ -646,7 +736,7 @@ def input_path_stem(input_path: Union[Path, ParseResult]) -> str:
     return "input"
 
 
-def full_output_path_templates(
+def get_full_output_path_templates(
     output_paths: List[Path],
     output_parent: Path,
     input_paths: List[Union[Path, ParseResult]],
@@ -732,32 +822,70 @@ def classify(input_path, output_path, config_path, workers=1):
                
     success_count = 0
     total_files = len(input_paths)
-    
-    full_output_paths = full_output_path_templates(output_paths, Path(output_path), input_paths)
+    completed_count = 0
+    start_time = time.monotonic()
+    recent_completion_times = deque(maxlen=50)
 
+    def log_progress() -> None:
+        if completed_count == 0:
+            return
+        if completed_count % 20 != 0 and completed_count != total_files:
+            return
+
+        # Use a rolling window to avoid misleading rates after restarts with many fast skips.
+        if len(recent_completion_times) >= 2:
+            window_elapsed_s = recent_completion_times[-1] - recent_completion_times[0]
+            window_completed = len(recent_completion_times) - 1
+            rate = window_completed / window_elapsed_s if window_elapsed_s > 0 else 0.0
+        else:
+            elapsed_s = time.monotonic() - start_time
+            rate = completed_count / elapsed_s if elapsed_s > 0 else 0.0
+        remaining = total_files - completed_count
+        eta_min = (remaining / rate / 60.0) if rate > 0 else float('inf')
+
+        if rate > 0:
+            logging.info(
+                "Progress: %s/%s items processed at %.3f items/s, %.2f mins remaining.",
+                completed_count,
+                total_files,
+                rate,
+                eta_min,
+            )
+        else:
+            logging.info(
+                "Progress: %s/%s items processed at %.3f items/s, ETA unavailable.",
+                completed_count,
+                total_files,
+                rate,
+            )
+    
+    full_output_path_templates = get_full_output_path_templates(output_paths, Path(output_path), input_paths)
 
     worker_count = max(1, int(workers))
 
     if worker_count == 1:
-        for input_path, output_path in zip(input_paths, full_output_paths):
+        for input_path, output_path_template in zip(input_paths, full_output_path_templates):
             try:
-                file_results = process_single_file(
-                    input_path, output_path, configs
+                file_results = _process_single_input(
+                    input_path, output_path_template=output_path_template, configs=configs
                 )
             except Exception as exc:
                 logging.error("--> FAILED: %s: %s", input_path, exc, exc_info=True)
-                continue
-
-            if any([r.success is False for r in file_results]):
-                logging.warning("--> FAILED: %s", input_path)
             else:
-                success_count += 1
+                if any([r.success is False for r in file_results]):
+                    logging.warning("--> FAILED: %s", input_path)
+                else:
+                    success_count += 1
+
+            completed_count += 1
+            recent_completion_times.append(time.monotonic())
+            log_progress()
     else:
         logging.info("Processing %s files with %s workers", total_files, worker_count)
         with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
             future_to_input = {
-                executor.submit(process_single_file, input_path, output_path, configs): input_path
-                for input_path, output_path in zip(input_paths, full_output_paths)
+                executor.submit(_process_single_input, input_path, output_path_template=output_path_template, configs=configs): input_path
+                for input_path, output_path_template in zip(input_paths, full_output_path_templates)
             }
 
             for future in concurrent.futures.as_completed(future_to_input):
@@ -766,12 +894,15 @@ def classify(input_path, output_path, config_path, workers=1):
                     file_results = future.result()
                 except Exception as exc:
                     logging.error("--> FAILED: %s: %s", current_input, exc, exc_info=True)
-                    continue
-
-                if any([r.success is False for r in file_results]):
-                    logging.warning("--> FAILED: %s", current_input)
                 else:
-                    success_count += 1
+                    if any([r.success is False for r in file_results]):
+                        logging.warning("--> FAILED: %s", current_input)
+                    else:
+                        success_count += 1
+
+                completed_count += 1
+                recent_completion_times.append(time.monotonic())
+                log_progress()
 
     logging.info("\n--- PROCESSING SUMMARY ---")
     logging.info("Successfully processed %s/%s files.", success_count, total_files)

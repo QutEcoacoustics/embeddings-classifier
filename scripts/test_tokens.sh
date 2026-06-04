@@ -17,6 +17,6 @@ check_token() {
   [[ "$code" == "200" ]] || { echo "$name invalid or API unavailable (HTTP $code)" >&2; exit 1; }
 }
 
-check_token "${ECOSOUNDS_API_TOKEN:-}" "ECOSOUNDS_API_TOKEN" "https://api.ecosounds.org"
+check_token "${BAW_AUTH_TOKEN:-}" "BAW_AUTH_TOKEN" "https://api.ecosounds.org"
 
 echo "Token validation passed"

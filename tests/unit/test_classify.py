@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import pytest
 from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -20,6 +21,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from helpers import TestHelpers
 from unit_helpers import UnitTestHelpers
 import embeddings_classifier.app as app
+
+
+def _first_classifier_folder(config_path):
+    configs = app.ClassifierConfig.from_any(config_path).as_list()
+    return app.resolve_classifier_name(configs[0], 0)
 
 
 class TestClassifyFunction:
@@ -61,8 +67,10 @@ class TestClassifyFunction:
         app.classify(input_file, 
                      dirs['workspace_output'], 
                      config_file)
+
+        classifier_folder = _first_classifier_folder(config_file)
         
-        expected_output_file = dirs['workspace_output'] / 'classifier_0' / '20230324T090000+1100_Kl9_3372829.wav.csv'
+        expected_output_file = dirs['workspace_output'] / classifier_folder / '20230324T090000+1100_Kl9_3372829.wav.csv'
         
         assert Path(expected_output_file).exists()
 
@@ -76,7 +84,8 @@ class TestClassifyFunction:
         input_path = Path(sample_data['parquet_path'])
         output_path = Path(sample_data['output_dir']) / 'output.parquet'
         config_path = Path(sample_data['config_path'])
-        expected_output_path = Path(sample_data['output_dir']) / 'classifier_0' / 'output.parquet'
+        classifier_folder = _first_classifier_folder(config_path)
+        expected_output_path = Path(sample_data['output_dir']) / classifier_folder / 'output.parquet'
 
         app.classify(input_path, output_path, config_path)
         
@@ -118,10 +127,12 @@ class TestClassifyFunction:
     
         app.classify(input_dir, output_dir, config_path)
 
+        classifier_folder = _first_classifier_folder(config_path)
+
         expected_output_files = [
-            output_dir / 'classifier_0' / 'file1.csv',
-            output_dir / 'classifier_0' / 'subdir1' / 'file2.csv',
-            output_dir / 'classifier_0' / 'subdir2' / 'file3.csv'
+            output_dir / classifier_folder / 'file1.csv',
+            output_dir / classifier_folder / 'subdir1' / 'file2.csv',
+            output_dir / classifier_folder / 'subdir2' / 'file3.csv'
         ]
 
         for expected_output_file in expected_output_files:
@@ -215,8 +226,10 @@ class TestClassifyFunction:
         app.classify(input_file,
                 dirs['workspace_output'],
                 config_file)
+
+        classifier_folder = _first_classifier_folder(config_file)
         
-        expected_output_path = dirs['workspace_output'] / 'classifier_0' / '3757025.csv'
+        expected_output_path = dirs['workspace_output'] / classifier_folder / '3757025.csv'
         
         assert Path(expected_output_path).exists()
         result_table = pv.read_csv(expected_output_path)
@@ -238,8 +251,10 @@ class TestClassifyFunction:
         app.classify(input_file,
                 dirs['workspace_output'],
                 config_file)
+
+        classifier_folder = _first_classifier_folder(config_file)
         
-        expected_output_path = dirs['workspace_output'] / 'classifier_0' / '3757025.csv'
+        expected_output_path = dirs['workspace_output'] / classifier_folder / '3757025.csv'
         
         assert Path(expected_output_path).exists()
         result_table = pv.read_csv(expected_output_path)
@@ -261,15 +276,28 @@ class TestClassifyFunction:
         config_path = dirs['workspace_config'] / 'config1.json'
   
         app.classify(input_dir, output_dir, config_path)
+
+        classifier_folder = _first_classifier_folder(config_path)
         
-        assert (output_dir / 'classifier_0' / '3757025.csv').exists()
-        assert (output_dir / 'classifier_0' / 'group_a' / 'real_file_2.csv').exists()
+        assert (output_dir / classifier_folder / '3757025.csv').exists()
+        assert (output_dir / classifier_folder / 'group_a' / 'real_file_2.csv').exists()
 
 
     def test_url_processing(self, clean_mounted_dirs, monkeypatch):
         """Test processing a directory containing copies of the real parquet file."""
 
         auth_token = os.getenv("BAW_AUTH_TOKEN")
+        if not auth_token:
+            try:
+                from dotenv import dotenv_values, find_dotenv
+
+                env_path = find_dotenv(usecwd=True)
+                if env_path:
+                    auth_token = dotenv_values(env_path).get("BAW_AUTH_TOKEN")
+            except Exception:
+                auth_token = None
+        if not auth_token:
+            pytest.fail("BAW_AUTH_TOKEN must be set for URL processing test")
         monkeypatch.setenv('QSP', f'user_token={auth_token}')
 
         TestHelpers.copy_config('config1.json')
@@ -281,9 +309,11 @@ class TestClassifyFunction:
         config_path = dirs['workspace_config'] / 'config1.json'
   
         app.classify(input_json_file, output_dir, config_path)
+
+        classifier_folder = _first_classifier_folder(config_path)
         
-        assert (output_dir / 'classifier_0' / 'file_1' / '3809284_detections.csv').exists()
-        assert (output_dir / 'classifier_0' / 'file_2' / '3809700_detections.csv').exists()
+        assert (output_dir / classifier_folder / 'file_1' / '3809284_detections.csv').exists()
+        assert (output_dir / classifier_folder / 'file_2' / '3809700_detections.csv').exists()
 
 
     @pytest.mark.skip(reason="TODO: add a redacted/synthetic large URL-manifest integration test")
@@ -315,7 +345,8 @@ class TestClassifyFunction:
         table = sample_data['sample_table']
         config_path = sample_data['config_path']
         output_base = Path(sample_data['output_dir']) / 'result.parquet'
-        expected_output = Path(sample_data['output_dir']) / 'classifier_0' / 'result.parquet'
+        classifier_folder = _first_classifier_folder(config_path)
+        expected_output = Path(sample_data['output_dir']) / classifier_folder / 'result.parquet'
 
         results = app.classify_table(table, config_path, output_path=output_base)
 
@@ -330,7 +361,7 @@ class TestClassifyFunction:
         absolute_output = Path('/tmp/out/result.csv')
         output_parent = Path('/tmp/<classifier_name>/base')
 
-        templates = app.full_output_path_templates(
+        templates = app.get_full_output_path_templates(
             [absolute_output],
             output_parent,
             [Path('/tmp/input.parquet')],
@@ -338,12 +369,12 @@ class TestClassifyFunction:
 
         assert templates == [Path('/tmp/out/<classifier_name>/result.csv')]
 
-    def test_process_loaded_table_in_memory_only(self, sample_data):
-        """Shared loaded-table path should support no-write mode."""
+    def test_process_single_input_in_memory_only(self, sample_data):
+        """Shared single-input path should support no-write mode."""
         table = sample_data['sample_table']
         configs = app.ClassifierConfig.from_any(sample_data['config_path'])
 
-        results = app.process_loaded_table(table, None, configs, source='unit_test')
+        results = app._process_single_input(table, None, configs)
 
         assert len(results) == 1
         assert results[0].success is True
@@ -364,13 +395,13 @@ class TestClassifyFunction:
 
         seen_inputs = []
 
-        def fake_process_single_file(input_path, output_path, configs):
+        def fake_process_single_input(input_path, output_path_template, configs):
             seen_inputs.append(Path(input_path).name)
             if Path(input_path).name == 'crash.parquet':
                 raise AssertionError('unexpected crash')
-            return [app.ClassifierResult(success=True, output_path=output_path)]
+            return [SimpleNamespace(success=True)]
 
-        monkeypatch.setattr(app, 'process_single_file', fake_process_single_file)
+        monkeypatch.setattr(app, '_process_single_input', fake_process_single_input)
 
         with pytest.raises(RuntimeError, match='Encountered 1 error\(s\) during processing'):
             app.classify(input_dir, output_dir, config_path, workers=1)
@@ -391,13 +422,13 @@ class TestClassifyFunction:
 
         seen_inputs = []
 
-        def fake_process_single_file(input_path, output_path, configs):
+        def fake_process_single_input(input_path, output_path_template, configs):
             seen_inputs.append(Path(input_path).name)
             if Path(input_path).name == 'crash.parquet':
                 raise AssertionError('unexpected crash')
-            return [app.ClassifierResult(success=True, output_path=output_path)]
+            return [SimpleNamespace(success=True)]
 
-        monkeypatch.setattr(app, 'process_single_file', fake_process_single_file)
+        monkeypatch.setattr(app, '_process_single_input', fake_process_single_input)
 
         with pytest.raises(RuntimeError, match='Encountered 1 error\(s\) during processing'):
             app.classify(input_dir, output_dir, config_path, workers=2)

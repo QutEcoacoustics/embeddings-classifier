@@ -105,13 +105,57 @@ class TestUtilityFunctions:
         assert any('file2.parquet' in f.name for f in parquet_files)
         assert not any('readme.txt' in f.name for f in parquet_files)
 
-    def test_with_output_paths_raises_on_sanitized_name_collision(self, sample_data):
+    def test_init_items_raises_on_sanitized_name_collision(self, sample_data):
         """Colliding sanitized classifier names should fail fast with a clear error."""
-        config = app.ClassifierConfig.from_any(sample_data['config_path'])
-        second = dict(config.as_list()[0])
+        config_list = app.ClassifierConfig.from_any(sample_data['config_path']).as_list()
+        second = dict(config_list[0])
         second['classifier_name'] = 'A_B'
-        config.configs.append(second)
-        config.configs[0]['classifier_name'] = 'A B'
+        config_list.append(second)
+        config_list[0]['classifier_name'] = 'A B'
+        configs = app.ClassifierConfig(configs=config_list)
 
         with pytest.raises(ValueError, match='resolve to the same output path'):
-            config.with_output_paths(Path(sample_data['output_dir']) / '<classifier_name>' / 'result.csv')
+            app.init_items(configs, Path(sample_data['output_dir']) / '<classifier_name>' / 'result.csv')
+
+    def test_resolve_classifier_name_uses_name_when_classifier_name_missing(self):
+        """The generic 'name' key should be accepted as classifier name fallback."""
+        config = {
+            'name': 'Powerful Owl',
+            'classifier': {'classes': ['owl']},
+        }
+        assert app.resolve_classifier_name(config, 0) == 'Powerful Owl'
+
+    def test_resolve_classifier_name_single_class_fallback(self):
+        """Single-class classifiers should derive name from class label."""
+        config = {
+            'classifier': {'classes': ['Yellow bellied glider']},
+        }
+        assert app.resolve_classifier_name(config, 2) == 'yellow_bellied_glider'
+
+    def test_resolve_classifier_name_multi_class_fallback(self):
+        """Multi-class classifiers should use informative short fallback names."""
+        config = {
+            'classifier': {'classes': ['a', 'b', 'c']},
+        }
+        assert app.resolve_classifier_name(config, 1) == 'classifier_1_3class'
+
+    def test_init_items_raises_on_derived_name_collision(self, sample_data):
+        """Collisions from class-derived fallback names should be detected."""
+        config_list = app.ClassifierConfig.from_any(sample_data['config_path']).as_list()
+        base = dict(config_list[0])
+        base.pop('classifier_name', None)
+        base.pop('name', None)
+        base['classifier'] = dict(base['classifier'])
+        base['classifier']['classes'] = ['A B']
+
+        second = dict(base)
+        second['classifier'] = dict(second['classifier'])
+        second['classifier']['classes'] = ['a_b']
+
+        base['classifier_name'] = app.resolve_classifier_name(base, 0)
+        second['classifier_name'] = app.resolve_classifier_name(second, 1)
+
+        configs = app.ClassifierConfig(configs=[base, second])
+
+        with pytest.raises(ValueError, match='resolve to the same output path'):
+            app.init_items(configs, Path(sample_data['output_dir']) / '<classifier_name>' / 'result.csv')

@@ -18,7 +18,7 @@ jobs:
 
       - name: Validate Ecosounds token
         env:
-          ECOSOUNDS_API_TOKEN: ${{ secrets.ECOSOUNDS_API_TOKEN }}
+          BAW_AUTH_TOKEN: ${{ secrets.BAW_AUTH_TOKEN }}
         run: |
           bash scripts/test_tokens.sh
       
@@ -42,7 +42,7 @@ jobs:
 
       - name: Install package and run unit tests
         env:
-          BAW_AUTH_TOKEN: ${{ secrets.ECOSOUNDS_API_TOKEN }}
+          BAW_AUTH_TOKEN: ${{ secrets.BAW_AUTH_TOKEN }}
         run: |
           pip install -e .
           python -c "import embeddings_classifier.app"
@@ -84,7 +84,7 @@ jobs:
         run: |
           docker run --rm \
             --user $(id -u):$(id -g) \
-            -e BAW_AUTH_TOKEN="${{ secrets.ECOSOUNDS_API_TOKEN }}" \
+            -e BAW_AUTH_TOKEN="${{ secrets.BAW_AUTH_TOKEN }}" \
             -v ${{ github.workspace }}:/app \
             --entrypoint python \
             parquet-processor:latest \

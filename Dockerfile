@@ -20,7 +20,7 @@ RUN apk add --no-cache \
 ENV PYARROW_WITH_HTTP=ON
 
 # Install python packages globally
-RUN pip install --no-cache-dir numpy pyarrow[http] requests pytest pytest-dotenv
+RUN pip install --no-cache-dir --retries 5 --timeout 120 numpy pyarrow requests pytest pytest-dotenv
 
 # --- Stage 2: The Final Production Image ---
 # Start from a minimal, clean alpine image
