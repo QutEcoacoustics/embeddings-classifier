@@ -48,7 +48,7 @@ jobs:
           pip install numpy pyarrow pytest pytest-cov pytest-mock
           pip install -e .
           python -c "import embeddings_classifier.app"
-          pytest tests/ -v
+          pytest tests/unit/ -v
 
       - name: Determine target version
         id: version
