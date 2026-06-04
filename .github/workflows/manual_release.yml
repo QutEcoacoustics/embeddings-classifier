@@ -24,36 +24,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Compute new version (and check for changes)
-        id: version
-        run: |
-          version="$(bash scripts/get_version.sh)"
-          if [ -z "${version}" ]; then
-            echo "No releasable changes since last release (ignoring src/VERSION). Exiting."
-            echo "changed=false" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          echo "new_version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "changed=true" >> "${GITHUB_OUTPUT}"
-
-      - name: Update package version file
-        if: steps.version.outputs.changed == 'true'
-        run: |
-          echo "${{ steps.version.outputs.new_version }}" > src/VERSION
-
       - name: Validate API token (fail fast)
-        if: steps.version.outputs.changed == 'true'
         run: |
           bash scripts/test_tokens.sh
 
+      - name: Log in to Docker Hub (Preflight Auth)
+        if: github.ref_name == 'main'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Set up Python
-        if: steps.version.outputs.changed == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Preflight install and tests
-        if: steps.version.outputs.changed == 'true'
         env:
           BAW_AUTH_TOKEN: ${{ secrets.BAW_AUTH_TOKEN }}
         run: |
@@ -61,61 +48,129 @@ jobs:
           pip install numpy pyarrow pytest pytest-cov pytest-mock
           pip install -e .
           python -c "import embeddings_classifier.app"
-          pytest tests/unit/ -v
+          pytest tests/ -v
 
-      - name: Commit package version file
-        if: steps.version.outputs.changed == 'true' && github.ref_name == 'main' && !inputs.dry_run
+      - name: Determine target version
+        id: version
         run: |
+          computed_version="$(bash scripts/get_version.sh)"
+          if [ -n "${computed_version}" ]; then
+            version="${computed_version}"
+            changed="true"
+          else
+            version="$(tr -d '[:space:]' < src/VERSION)"
+            changed="false"
+          fi
+
+          if [ -z "${version}" ]; then
+            echo "Unable to determine target version from scripts/get_version.sh or src/VERSION"
+            exit 1
+          fi
+
+          echo "target_version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "changed=${changed}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Docker Buildx
+        if: github.ref_name == 'main'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Update package version file
+        run: |
+          echo "${{ steps.version.outputs.target_version }}" > src/VERSION
+
+      - name: Verify Docker Build (Do Not Push)
+        if: github.ref_name == 'main'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: qutecoacoustics/crane-linear-model-runner:${{ steps.version.outputs.target_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # --- POINT OF NO RETURN ---
+      # Everything below this line ONLY runs if inputs.dry_run is FALSE
+      
+      - name: Commit package version file
+        if: github.ref_name == 'main' && inputs.dry_run == false
+        id: commit_version
+        run: |
+          if git diff --quiet -- src/VERSION; then
+            echo "No VERSION change to commit"
+            echo "committed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add src/VERSION
-          git commit -m "Release ${{ steps.version.outputs.new_version }}"
+          git commit -m "Release ${{ steps.version.outputs.target_version }}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "committed=true" >> "${GITHUB_OUTPUT}"
 
-      - name: Tag and push release tag
-        if: steps.version.outputs.changed == 'true' && github.ref_name == 'main' && !inputs.dry_run
+      - name: Check if tag exists
+        if: github.ref_name == 'main' && inputs.dry_run == false
+        id: tag_check
         run: |
-          git tag -a "v${{ steps.version.outputs.new_version }}" -m "Release v${{ steps.version.outputs.new_version }}"
-          git push origin "v${{ steps.version.outputs.new_version }}"
+          tag_name="v${{ steps.version.outputs.target_version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag_name}" >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
 
-      - name: Set up Docker Buildx
-        if: steps.version.outputs.changed == 'true' && github.ref_name == 'main' && !inputs.dry_run
-        uses: docker/setup-buildx-action@v3
+      - name: Create release tag
+        if: github.ref_name == 'main' && inputs.dry_run == false && steps.tag_check.outputs.exists != 'true'
+        run: |
+          tag_name="v${{ steps.version.outputs.target_version }}"
+          git tag "${tag_name}"
+          git push origin "${tag_name}"
 
-      - name: Log in to Docker Hub
-        if: steps.version.outputs.changed == 'true' && github.ref_name == 'main' && !inputs.dry_run
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Check if release exists
+        if: github.ref_name == 'main' && inputs.dry_run == false
+        id: release_check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_name="v${{ steps.version.outputs.target_version }}"
+          if gh release view "${tag_name}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
 
-      - name: Build and push Docker image
-        if: steps.version.outputs.changed == 'true' && github.ref_name == 'main' && !inputs.dry_run
+      - name: Create GitHub release
+        if: github.ref_name == 'main' && inputs.dry_run == false && steps.release_check.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_name="v${{ steps.version.outputs.target_version }}"
+          gh release create "${tag_name}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${tag_name}" \
+            --target "${GITHUB_REF_NAME}" \
+            --generate-notes
+
+      - name: Push Docker image
+        if: github.ref_name == 'main' && inputs.dry_run == false
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           push: true
           tags: |
-            qutecoacoustics/crane-linear-model-runner:${{ steps.version.outputs.new_version }}
+            qutecoacoustics/crane-linear-model-runner:${{ steps.version.outputs.target_version }}
             qutecoacoustics/crane-linear-model-runner:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Create GitHub release
-        if: steps.version.outputs.changed == 'true' && github.ref_name == 'main' && !inputs.dry_run
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.new_version }}
-          name: v${{ steps.version.outputs.new_version }}
-          generate_release_notes: true
-
       - name: Dry-run summary
-        if: steps.version.outputs.changed == 'true' && github.ref_name == 'main' && inputs.dry_run
+        if: github.ref_name == 'main' && inputs.dry_run == true
         run: |
-          echo "Dry-run mode: preflight completed; commit/tag/release steps were intentionally skipped."
+          echo "Dry-run mode: token validation, Docker auth, tests, version resolution, VERSION update, and no-push Docker build completed."
 
       - name: Warn when run outside main
-        if: steps.version.outputs.changed == 'true' && github.ref_name != 'main'
+        if: github.ref_name != 'main'
         run: |
           echo "Release write steps are skipped because this workflow run is on ref '${GITHUB_REF_NAME}', not 'main'."
