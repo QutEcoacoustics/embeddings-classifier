@@ -10,6 +10,8 @@ import shutil
 from pathlib import Path
 import json
 import base64
+import os
+import requests
 
 from unit_helpers import UnitTestHelpers
 
@@ -133,4 +135,40 @@ def pytest_collection_modifyitems(config, items):
         # Add unit marker to all tests that are not marked as docker
         if not any(mark.name in ['docker'] for mark in item.iter_markers()):
             item.add_marker(pytest.mark.unit)
+
+
+@pytest.fixture(scope="session")
+def validated_baw_auth_token():
+    """Resolve and validate BAW_AUTH_TOKEN once for auth integration tests."""
+    auth_token = os.getenv("BAW_AUTH_TOKEN")
+
+    if not auth_token:
+        try:
+            from dotenv import dotenv_values, find_dotenv
+
+            env_path = find_dotenv(usecwd=True)
+            if env_path:
+                auth_token = dotenv_values(env_path).get("BAW_AUTH_TOKEN")
+        except Exception:
+            auth_token = None
+
+    if not auth_token:
+        pytest.fail("BAW_AUTH_TOKEN must be set for auth integration tests")
+
+    # Mirror scripts/test_tokens.sh behavior by validating against /status once.
+    status_url = "https://api.ecosounds.org/status"
+    headers = {"Authorization": f'Token token="{auth_token}"'}
+
+    try:
+        response = requests.get(status_url, headers=headers, timeout=(5, 30))
+    except requests.RequestException as exc:
+        pytest.fail(f"Could not validate BAW_AUTH_TOKEN against {status_url}: {exc}")
+
+    if response.status_code != 200:
+        pytest.fail(
+            "BAW_AUTH_TOKEN invalid or API unavailable "
+            f"(HTTP {response.status_code}) when calling {status_url}"
+        )
+
+    return auth_token
             

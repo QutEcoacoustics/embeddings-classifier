@@ -283,22 +283,11 @@ class TestClassifyFunction:
         assert (output_dir / classifier_folder / 'group_a' / 'real_file_2.csv').exists()
 
 
-    def test_url_processing(self, clean_mounted_dirs, monkeypatch):
+    @pytest.mark.auth_integration
+    def test_url_processing(self, clean_mounted_dirs, monkeypatch, validated_baw_auth_token):
         """Test processing a directory containing copies of the real parquet file."""
 
-        auth_token = os.getenv("BAW_AUTH_TOKEN")
-        if not auth_token:
-            try:
-                from dotenv import dotenv_values, find_dotenv
-
-                env_path = find_dotenv(usecwd=True)
-                if env_path:
-                    auth_token = dotenv_values(env_path).get("BAW_AUTH_TOKEN")
-            except Exception:
-                auth_token = None
-        if not auth_token:
-            pytest.fail("BAW_AUTH_TOKEN must be set for URL processing test")
-        monkeypatch.setenv('QSP', f'user_token={auth_token}')
+        monkeypatch.setenv('QSP', f'user_token={validated_baw_auth_token}')
 
         TestHelpers.copy_config('config1.json')
         TestHelpers.copy_input('url_list_1.json')

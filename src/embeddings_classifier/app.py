@@ -126,8 +126,8 @@ class ClassifierItem:
 
 def check_output_clashes(resolved_paths):
     """
-    for an item's resolved output paths (one per classifier), checks that there were no clashes
-    due to duplicate sanitized classifier names. Prevants overwriting results files by multiple classifiers
+    For an item's resolved output paths (one per classifier), checks that there were no clashes
+    due to duplicate sanitized classifier names. Prevents overwriting results files by multiple classifiers.
     """
 
     non_none_paths = [path for path in resolved_paths if path is not None]
@@ -510,44 +510,14 @@ def get_table_from_path(input_path: Union[Path, ParseResult]) -> Tuple[Optional[
     return table, None
 
 
-
-# def process_single_file(
-#     input_path: Union[Path, ParseResult], 
-#     output_path: Optional[Path], 
-#     configs: ClassifierConfig,
-# ) -> List[ClassifierResult]:
-#     """
-#     Process a single parquet file
-#     @param input_path: Path to or url to the input parquet file
-#     @param output_path: Optional path template for saving output files. If None, results are returned in memory only.
-#     @param configs: Normalized classifier config.
-#     """
-
-#     table, error = get_table_from_path(input_path)
-#     results, config_with_outputputs = init_file
-#     if table is None:
-#         logging.error("Error reading table from %s: %s", input_path, error)
-#         configs_with_outputs = configs.with_output_paths(output_path)
-#         fallback_results = [
-#             ClassifierResult(
-#                 success=False,
-#                 output_path=config['output_path'],
-#                 error=str(error),
-#             )
-#             for config in configs_with_outputs
-#         ]
-#         return fallback_results
-
-#     return _process_loaded_table(table, output_path, configs, source=str(input_path))
-
 def init_items(
     configs: ClassifierConfig,
     output_path_template: Optional[Path],
 ) -> List[ClassifierItem]:
     """
-    initializes a list of classifier items for a single file one per classifier 
-
-    otuput_path_template is only for loggging message
+    Initializes a list of classifier items (one per classifier) for a single file
+    - Checks for output file clashes due to sanitized classifier names
+    - Checks if output files already exist and marks those items as successful to skip processing    
     """
     items = [
         ClassifierItem(output_path_template=output_path_template, config=config)
@@ -555,9 +525,6 @@ def init_items(
     ]
 
     check_output_clashes([item.output_path for item in items])     
-
-    if all(item.success for item in items):
-        logging.info("All output files for %s already exist, skipping processing.", output_path_template)
     return items
 
 
@@ -575,6 +542,7 @@ def _process_single_input(
 
     # return early
     if all(item.success for item in items):
+        logging.info("All output files for %s already exist, skipping processing.", output_path_template)
         return items
     
     # load the table if we were given a path or ParseResult instead of a preloaded table
