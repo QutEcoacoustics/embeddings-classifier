@@ -6,7 +6,6 @@ A "run" is set of recordings, defined by a baw filter, and a set of recognizers 
 
 
 import concurrent.futures
-import os
 import argparse
 import json
 from pathlib import Path
@@ -269,6 +268,8 @@ def main(params_path, limit=-1, docker_image=DEFAULT_DOCKER_IMAGE, workers=1):
     global api
     api = baw_api()
 
+    params_path = Path(params_path).expanduser()
+
     with open(params_path, "r") as f:
         params = json.load(f)
 
@@ -276,7 +277,7 @@ def main(params_path, limit=-1, docker_image=DEFAULT_DOCKER_IMAGE, workers=1):
         params = [params]
 
     for run_index, run in enumerate(params):
-        output_dir = Path(run['output'])
+        output_dir = Path(run['output']).expanduser()
         timing_store = setup_logging(output_dir)
 
         logging.info(f"--- Starting run {run_index + 1}/{len(params)} with output to {output_dir} ---")
@@ -288,8 +289,8 @@ def main(params_path, limit=-1, docker_image=DEFAULT_DOCKER_IMAGE, workers=1):
         try:
             process_from_links(            
                 inputs_json,
-                Path(run['config']),
-                Path(run['output']),
+                Path(run['config']).expanduser(),
+                output_dir,
                 timing_store,
                 docker_image,
                 workers)

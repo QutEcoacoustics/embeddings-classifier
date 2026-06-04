@@ -108,14 +108,15 @@ def results_exist(site_output_path):
 def process_file(file, recognizer_configs, output_path, timing_store, docker_image):
 
 
-    parquet_path = Path(output_path) / 'parquet_temp' / f"{file['id']}.parquet"
+    output_path = Path(output_path).expanduser()
+    parquet_path = output_path / 'parquet_temp' / f"{file['id']}.parquet"
          
 
     for recognizer_config in recognizer_configs:
 
-        config_path = recognizer_config['config']
+        config_path = Path(recognizer_config['config']).expanduser()
         relative_output = recognizer_config['output']
-        full_output_path = Path(output_path) / relative_output
+        full_output_path = output_path / relative_output
 
         logging.info(f"Using recognizer: {recognizer_config['name']}, config: {config_path}, output: {full_output_path}")
 
@@ -137,7 +138,7 @@ def process_file(file, recognizer_configs, output_path, timing_store, docker_ima
         run_docker_container(
             input_file_path=parquet_path,
             output_folder_path=site_output_path,
-            config_file_path=Path(config_path),
+            config_file_path=config_path,
             docker_image=docker_image,
         )
         container_duration = time.perf_counter() - start_time
@@ -227,6 +228,8 @@ def main(params_path, limit=-1, workers=None, docker_image=DEFAULT_DOCKER_IMAGE)
     global api
     api = baw_api()
 
+    params_path = Path(params_path).expanduser()
+
     with open(params_path, "r") as f:
         params = json.load(f)
 
@@ -234,7 +237,7 @@ def main(params_path, limit=-1, workers=None, docker_image=DEFAULT_DOCKER_IMAGE)
         params = [params]
 
     for run_index, run in enumerate(params):
-        output_dir = Path(run['output'])
+        output_dir = Path(run['output']).expanduser()
         timing_store = setup_logging(output_dir)
 
         logging.info(f"--- Starting run {run_index + 1}/{len(params)} with output to {output_dir} ---")
@@ -253,7 +256,7 @@ def main(params_path, limit=-1, workers=None, docker_image=DEFAULT_DOCKER_IMAGE)
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             # Create a dictionary to map futures to their file info for logging
             future_to_file = {
-                executor.submit(process_file, file, run['recognizer_configs'], run['output'], timing_store, docker_image): file
+                executor.submit(process_file, file, run['recognizer_configs'], output_dir, timing_store, docker_image): file
                 for file in filelist
             }
 

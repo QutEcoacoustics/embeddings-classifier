@@ -1,6 +1,7 @@
 import argparse
 import sys
 import subprocess
+import threading
 from pathlib import Path
 from typing import Union, Tuple
 import shlex
@@ -29,25 +30,62 @@ def sys_command(command: Union[str, list], cwd: Union[str, Path] = None) -> Tupl
     print(f"Executing command:\n {command_for_bash} \n in {cwd_str if cwd_str else 'current directory'}")
 
     process = None
+    stdout = ""
+    stderr = ""
+
+    def _stream_pipe(pipe, target_stream, chunks):
+        try:
+            for line in iter(pipe.readline, ""):
+                target_stream.write(line)
+                target_stream.flush()
+                chunks.append(line)
+        finally:
+            pipe.close()
+
     try:
         process = subprocess.Popen(
             command_list,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            bufsize=1,
             cwd=cwd_str,
         )
-        stdout, stderr = process.communicate()
+        stdout_chunks = []
+        stderr_chunks = []
+
+        assert process.stdout is not None
+        assert process.stderr is not None
+
+        stdout_thread = threading.Thread(
+            target=_stream_pipe,
+            args=(process.stdout, sys.stdout, stdout_chunks),
+            daemon=True,
+        )
+        stderr_thread = threading.Thread(
+            target=_stream_pipe,
+            args=(process.stderr, sys.stderr, stderr_chunks),
+            daemon=True,
+        )
+
+        stdout_thread.start()
+        stderr_thread.start()
+
+        process.wait()
+        stdout_thread.join()
+        stderr_thread.join()
+
+        stdout = "".join(stdout_chunks)
+        stderr = "".join(stderr_chunks)
     except KeyboardInterrupt as e:
         if process is not None:
             print("KeyboardInterrupt received. Terminating child process...")
             process.terminate()
             try:
-                stdout, stderr = process.communicate(timeout=5)
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 print("Child process did not exit in time. Killing child process...")
                 process.kill()
-                process.communicate()
         raise RuntimeError("Execution interrupted by user (Ctrl+C).") from e
     except FileNotFoundError as exc:
         raise RuntimeError(f"Command not found: '{command_list[0]}'. Please ensure it's in your PATH.") from exc

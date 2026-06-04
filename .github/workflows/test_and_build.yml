@@ -16,12 +16,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Validate Ecosounds token
-        env:
-          ECOSOUNDS_API_TOKEN: ${{ secrets.ECOSOUNDS_API_TOKEN }}
-        run: |
-          bash scripts/test_tokens.sh
-      
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
@@ -40,12 +34,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install numpy pyarrow pytest pytest-cov pytest-mock
 
-      - name: Install package and run unit tests
-        env:
-          BAW_AUTH_TOKEN: ${{ secrets.ECOSOUNDS_API_TOKEN }}
+      - name: Install package
         run: |
           pip install -e .
           python -c "import embeddings_classifier.app"
+
+      - name: "Run unit tests (fork PR: exclude auth integration)"
+        if: "github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork"
+        run: |
+          pytest tests/unit/ -v -m "not auth_integration"
+
+      - name: "Run unit tests (trusted: include auth integration)"
+        if: "github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork"
+        env:
+          BAW_AUTH_TOKEN: ${{ secrets.BAW_AUTH_TOKEN }}
+        run: |
+          bash scripts/test_tokens.sh
           pytest tests/unit/ -v
       
   build:
@@ -79,13 +83,28 @@ jobs:
           tags: parquet-processor:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke test built image (no mounts)
+        run: |
+          docker run --rm parquet-processor:latest version
       
-      - name: Unit Test in Docker container
+      - name: "Unit Test in Docker container (fork PR: exclude auth integration)"
+        if: "github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork"
         run: |
           docker run --rm \
             --user $(id -u):$(id -g) \
-            -e BAW_AUTH_TOKEN="${{ secrets.ECOSOUNDS_API_TOKEN }}" \
-            -v ${{ github.workspace }}:/app \
+            -v ${{ github.workspace }}/tests:/app/tests \
+            --entrypoint python \
+            parquet-processor:latest \
+            -m pytest tests/unit/ -v -m "not auth_integration"
+
+      - name: "Unit Test in Docker container (trusted: include auth integration)"
+        if: "github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork"
+        run: |
+          docker run --rm \
+            --user $(id -u):$(id -g) \
+            -e BAW_AUTH_TOKEN="${{ secrets.BAW_AUTH_TOKEN }}" \
+            -v ${{ github.workspace }}/tests:/app/tests \
             --entrypoint python \
             parquet-processor:latest \
             -m pytest tests/unit/ -v

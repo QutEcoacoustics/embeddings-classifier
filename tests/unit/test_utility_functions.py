@@ -1,5 +1,6 @@
 
 import json
+import copy
 from pathlib import Path
 import pytest
 
@@ -105,13 +106,103 @@ class TestUtilityFunctions:
         assert any('file2.parquet' in f.name for f in parquet_files)
         assert not any('readme.txt' in f.name for f in parquet_files)
 
-    def test_with_output_paths_raises_on_sanitized_name_collision(self, sample_data):
+    def test_init_items_raises_on_sanitized_name_collision(self, sample_data):
         """Colliding sanitized classifier names should fail fast with a clear error."""
-        config = app.ClassifierConfig.from_any(sample_data['config_path'])
-        second = dict(config.as_list()[0])
+        config_list = app.ClassifierConfig.from_any(sample_data['config_path']).as_list()
+        second = dict(config_list[0])
         second['classifier_name'] = 'A_B'
-        config.configs.append(second)
-        config.configs[0]['classifier_name'] = 'A B'
+        config_list.append(second)
+        config_list[0]['classifier_name'] = 'A B'
+        configs = app.ClassifierConfig(configs=config_list)
 
         with pytest.raises(ValueError, match='resolve to the same output path'):
-            config.with_output_paths(Path(sample_data['output_dir']) / '<classifier_name>' / 'result.csv')
+            app.init_items(configs, Path(sample_data['output_dir']) / '<classifier_name>' / 'result.csv')
+
+    def test_resolve_classifier_name_uses_name_when_classifier_name_missing(self):
+        """The generic 'name' key should be accepted as classifier name fallback."""
+        config = {
+            'name': 'Powerful Owl',
+            'classifier': {'classes': ['owl']},
+        }
+        assert app.resolve_classifier_name(config, 0) == 'Powerful Owl'
+
+    def test_resolve_classifier_name_single_class_fallback(self):
+        """Single-class classifiers should derive name from class label."""
+        config = {
+            'classifier': {'classes': ['Yellow bellied glider']},
+        }
+        assert app.resolve_classifier_name(config, 2) == 'yellow_bellied_glider'
+
+    def test_resolve_classifier_name_multi_class_fallback(self):
+        """Multi-class classifiers should use informative short fallback names."""
+        config = {
+            'classifier': {'classes': ['a', 'b', 'c']},
+        }
+        assert app.resolve_classifier_name(config, 1) == 'classifier_1_3class'
+
+    def test_init_items_raises_on_derived_name_collision(self, sample_data):
+        """Collisions from class-derived fallback names should be detected."""
+        config_list = app.ClassifierConfig.from_any(sample_data['config_path']).as_list()
+        base = dict(config_list[0])
+        base.pop('classifier_name', None)
+        base.pop('name', None)
+        base['classifier'] = dict(base['classifier'])
+        base['classifier']['classes'] = ['A B']
+
+        second = dict(base)
+        second['classifier'] = dict(second['classifier'])
+        second['classifier']['classes'] = ['a_b']
+
+        base['classifier_name'] = app.resolve_classifier_name(base, 0)
+        second['classifier_name'] = app.resolve_classifier_name(second, 1)
+
+        configs = app.ClassifierConfig(configs=[base, second])
+
+        with pytest.raises(ValueError, match='resolve to the same output path'):
+            app.init_items(configs, Path(sample_data['output_dir']) / '<classifier_name>' / 'result.csv')
+
+    def test_build_threshold_array_scalar(self):
+        classes = ['a', 'b']
+        result = app.build_threshold_array(classes, 0.25)
+        np.testing.assert_allclose(result, np.array([0.25, 0.25], dtype=np.float32))
+
+    def test_build_threshold_array_none(self):
+        classes = ['a', 'b']
+        result = app.build_threshold_array(classes, None)
+        expected = np.array([np.finfo(np.float32).min, np.finfo(np.float32).min], dtype=np.float32)
+        np.testing.assert_allclose(result, expected)
+
+    def test_build_threshold_array_list_and_length_validation(self):
+        classes = ['a', 'b']
+        result = app.build_threshold_array(classes, [0.1, None])
+        expected = np.array([0.1, np.finfo(np.float32).min], dtype=np.float32)
+        np.testing.assert_allclose(result, expected)
+
+        with pytest.raises(ValueError, match='Threshold list length'):
+            app.build_threshold_array(classes, [0.1])
+
+    def test_build_threshold_array_dict_with_missing_and_none(self):
+        classes = ['a', 'b', 'c']
+        result = app.build_threshold_array(classes, {'a': 0.2, 'b': None})
+        expected = np.array([0.2, np.finfo(np.float32).min, 0.0], dtype=np.float32)
+        np.testing.assert_allclose(result, expected)
+
+    def test_build_threshold_array_invalid_types(self):
+        classes = ['a']
+
+        with pytest.raises(TypeError, match='Threshold must be one of'):
+            app.build_threshold_array(classes, 'bad')
+
+        with pytest.raises(TypeError, match="Threshold for class 'a' must be a number or None"):
+            app.build_threshold_array(classes, {'a': 'bad'})
+
+    def test_from_any_does_not_mutate_input_with_threshold_array(self, sample_data):
+        raw = copy.deepcopy(sample_data['config'])
+
+        assert 'threshold_array' not in raw
+
+        normalized = app.ClassifierConfig.from_any(raw).as_list()[0]
+
+        assert 'threshold_array' in normalized
+        assert isinstance(normalized['threshold_array'], np.ndarray)
+        assert 'threshold_array' not in raw
