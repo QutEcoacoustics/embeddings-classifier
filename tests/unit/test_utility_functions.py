@@ -2,6 +2,7 @@
 import json
 import copy
 import dataclasses
+import base64
 from pathlib import Path
 import pytest
 
@@ -86,6 +87,19 @@ class TestUtilityFunctions:
         }
 
         with pytest.raises(ValueError):
+            config_module.deserialize_classifier_params(classifier)
+
+    def test_deserialize_classifier_params_non_divisible_beta_length(self):
+        """beta length must be divisible by class count for matrix reshape."""
+        beta_flat = np.array([1, 2, 3, 4, 5], dtype=np.float32)  # 5 values
+        beta_bias = np.array([0, 0], dtype=np.float32)
+        classifier = {
+            "classes": ["a", "b"],  # 2 classes, so 5 is invalid
+            "beta": base64.b64encode(beta_flat.tobytes()).decode('ascii'),
+            "beta_bias": base64.b64encode(beta_bias.tobytes()).decode('ascii'),
+        }
+
+        with pytest.raises(ValueError, match="not divisible"):
             config_module.deserialize_classifier_params(classifier)
     
 
@@ -198,6 +212,21 @@ class TestUtilityFunctions:
 
         assert isinstance(config.threshold_array, np.ndarray)
         assert 'threshold_array' not in raw
+
+    def test_as_dict_preserves_model_config_and_threshold(self):
+        config = config_module.ClassifierConfig(
+            classifier_name='test_classifier',
+            classes=['a', 'b'],
+            beta=np.zeros((2, 2), dtype=np.float32),
+            beta_bias=np.zeros(2, dtype=np.float32),
+            model_config={'foo': 'bar'},
+            threshold={'a': 0.1, 'b': 0.2},
+        )
+
+        serialized = config.as_dict()
+
+        assert serialized['model_config'] == {'foo': 'bar'}
+        assert serialized['threshold'] == {'a': 0.1, 'b': 0.2}
 
     def test_classifier_config_rejects_beta_columns_mismatch(self):
         with pytest.raises(ValueError, match='beta shape does not match classes'):

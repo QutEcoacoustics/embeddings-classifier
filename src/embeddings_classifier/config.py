@@ -40,13 +40,22 @@ def deserialize_classifier_params(classifier_config: Dict[str, Any]) -> tuple:
     """Deserialize beta weights and bias from base64 encoded strings."""
 
     def do_decode(x: str) -> np.ndarray:
-        flat = np.frombuffer(base64.b64decode(x.encode('ascii')), dtype=np.float32)
-        return flat
+        raw = base64.b64decode(x.strip().encode('ascii'), validate=True)
+        return np.frombuffer(raw, dtype=np.float32)
 
     try:
         beta_flat = do_decode(classifier_config['beta'])
-        num_rows = len(beta_flat) // len(classifier_config['classes'])
         num_cols = len(classifier_config['classes'])
+        if num_cols == 0:
+            raise ValueError("Classifier must contain at least one class")
+
+        if len(beta_flat) % num_cols != 0:
+            raise ValueError(
+                "Invalid beta length: "
+                f"{len(beta_flat)} values is not divisible by {num_cols} classes"
+            )
+
+        num_rows = len(beta_flat) // num_cols
         beta = beta_flat.reshape(num_rows, num_cols)
         beta_bias = do_decode(classifier_config['beta_bias'])
         return beta, beta_bias
@@ -249,11 +258,15 @@ class ClassifierConfig:
                 'classes': self.classes,
                 'beta': self.beta,
                 'beta_bias': self.beta_bias,
+                'classifier_name': self.classifier_name,
+                'model_config': self.model_config,
             },
-            'classifier_name': self.classifier_name,
-            'threshold_array': self.threshold_array,
-            'save_empty': self.save_empty,
-            'skip_existing': self.skip_existing,
+            "run_params": {
+                'threshold': self.threshold,
+                'threshold_array': self.threshold_array,
+                'save_empty': self.save_empty,
+                'skip_existing': self.skip_existing,
+            }
         }
 
 
