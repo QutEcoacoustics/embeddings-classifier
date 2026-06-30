@@ -1,6 +1,7 @@
 
 import json
 import copy
+import dataclasses
 from pathlib import Path
 import pytest
 
@@ -14,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from helpers import TestHelpers
 from unit_helpers import UnitTestHelpers
 import embeddings_classifier.app as app
+import embeddings_classifier.config as config_module
 
 class TestUtilityFunctions:
     """Test cases for utility functions."""
@@ -67,7 +69,7 @@ class TestUtilityFunctions:
     def test_deserialize_classifier_params(self, sample_data):
         """Test deserializing classifier parameters."""
         classifier = sample_data['config']['classifier']
-        beta, beta_bias = app.deserialize_classifier_params(classifier)
+        beta, beta_bias = config_module.deserialize_classifier_params(classifier)
         
         assert isinstance(beta, np.ndarray)
         assert isinstance(beta_bias, np.ndarray)
@@ -84,7 +86,7 @@ class TestUtilityFunctions:
         }
 
         with pytest.raises(ValueError):
-            app.deserialize_classifier_params(classifier)
+            config_module.deserialize_classifier_params(classifier)
     
 
     def test_get_parquet_files(self, clean_mounted_dirs):
@@ -108,12 +110,10 @@ class TestUtilityFunctions:
 
     def test_init_items_raises_on_sanitized_name_collision(self, sample_data):
         """Colliding sanitized classifier names should fail fast with a clear error."""
-        config_list = app.ClassifierConfig.from_any(sample_data['config_path']).as_list()
-        second = dict(config_list[0])
-        second['classifier_name'] = 'A_B'
-        config_list.append(second)
-        config_list[0]['classifier_name'] = 'A B'
-        configs = app.ClassifierConfig(configs=config_list)
+        first = list(config_module.ClassifierConfigList.from_any(sample_data['config_path']))[0]
+        first.classifier_name = 'A B'
+        second = dataclasses.replace(first, classifier_name='A_B')
+        configs = config_module.ClassifierConfigList(configs=[first, second])
 
         with pytest.raises(ValueError, match='resolve to the same output path'):
             app.init_items(configs, Path(sample_data['output_dir']) / '<classifier_name>' / 'result.csv')
@@ -124,66 +124,59 @@ class TestUtilityFunctions:
             'name': 'Powerful Owl',
             'classifier': {'classes': ['owl']},
         }
-        assert app.resolve_classifier_name(config, 0) == 'Powerful Owl'
+        assert config_module.resolve_classifier_name(config, 0) == 'Powerful Owl'
 
     def test_resolve_classifier_name_single_class_fallback(self):
         """Single-class classifiers should derive name from class label."""
         config = {
             'classifier': {'classes': ['Yellow bellied glider']},
         }
-        assert app.resolve_classifier_name(config, 2) == 'yellow_bellied_glider'
+        assert config_module.resolve_classifier_name(config, 2) == 'yellow_bellied_glider'
 
     def test_resolve_classifier_name_multi_class_fallback(self):
         """Multi-class classifiers should use informative short fallback names."""
         config = {
             'classifier': {'classes': ['a', 'b', 'c']},
         }
-        assert app.resolve_classifier_name(config, 1) == 'classifier_1_3class'
+        assert config_module.resolve_classifier_name(config, 1) == 'classifier_1_3class'
 
     def test_init_items_raises_on_derived_name_collision(self, sample_data):
         """Collisions from class-derived fallback names should be detected."""
-        config_list = app.ClassifierConfig.from_any(sample_data['config_path']).as_list()
-        base = dict(config_list[0])
+        base = copy.deepcopy(sample_data['config'])
         base.pop('classifier_name', None)
         base.pop('name', None)
         base['classifier'] = dict(base['classifier'])
         base['classifier']['classes'] = ['A B']
 
-        second = dict(base)
-        second['classifier'] = dict(second['classifier'])
+        second = copy.deepcopy(base)
         second['classifier']['classes'] = ['a_b']
 
-        base['classifier_name'] = app.resolve_classifier_name(base, 0)
-        second['classifier_name'] = app.resolve_classifier_name(second, 1)
-
-        configs = app.ClassifierConfig(configs=[base, second])
-
-        with pytest.raises(ValueError, match='resolve to the same output path'):
-            app.init_items(configs, Path(sample_data['output_dir']) / '<classifier_name>' / 'result.csv')
+        with pytest.raises(ValueError, match='Duplicate classifier_name values are not allowed'):
+            config_module.ClassifierConfigList.from_any([base, second])
 
     def test_build_threshold_array_scalar(self):
         classes = ['a', 'b']
-        result = app.build_threshold_array(classes, 0.25)
+        result = config_module.build_threshold_array(classes, 0.25)
         np.testing.assert_allclose(result, np.array([0.25, 0.25], dtype=np.float32))
 
     def test_build_threshold_array_none(self):
         classes = ['a', 'b']
-        result = app.build_threshold_array(classes, None)
+        result = config_module.build_threshold_array(classes, None)
         expected = np.array([np.finfo(np.float32).min, np.finfo(np.float32).min], dtype=np.float32)
         np.testing.assert_allclose(result, expected)
 
     def test_build_threshold_array_list_and_length_validation(self):
         classes = ['a', 'b']
-        result = app.build_threshold_array(classes, [0.1, None])
+        result = config_module.build_threshold_array(classes, [0.1, None])
         expected = np.array([0.1, np.finfo(np.float32).min], dtype=np.float32)
         np.testing.assert_allclose(result, expected)
 
         with pytest.raises(ValueError, match='Threshold list length'):
-            app.build_threshold_array(classes, [0.1])
+            config_module.build_threshold_array(classes, [0.1])
 
     def test_build_threshold_array_dict_with_missing_and_none(self):
         classes = ['a', 'b', 'c']
-        result = app.build_threshold_array(classes, {'a': 0.2, 'b': None})
+        result = config_module.build_threshold_array(classes, {'a': 0.2, 'b': None})
         expected = np.array([0.2, np.finfo(np.float32).min, 0.0], dtype=np.float32)
         np.testing.assert_allclose(result, expected)
 
@@ -191,18 +184,36 @@ class TestUtilityFunctions:
         classes = ['a']
 
         with pytest.raises(TypeError, match='Threshold must be one of'):
-            app.build_threshold_array(classes, 'bad')
+            config_module.build_threshold_array(classes, 'bad')
 
         with pytest.raises(TypeError, match="Threshold for class 'a' must be a number or None"):
-            app.build_threshold_array(classes, {'a': 'bad'})
+            config_module.build_threshold_array(classes, {'a': 'bad'})
 
     def test_from_any_does_not_mutate_input_with_threshold_array(self, sample_data):
         raw = copy.deepcopy(sample_data['config'])
 
         assert 'threshold_array' not in raw
 
-        normalized = app.ClassifierConfig.from_any(raw).as_list()[0]
+        config = config_module.ClassifierConfig.from_any(raw)
 
-        assert 'threshold_array' in normalized
-        assert isinstance(normalized['threshold_array'], np.ndarray)
+        assert isinstance(config.threshold_array, np.ndarray)
         assert 'threshold_array' not in raw
+
+    def test_classifier_config_rejects_beta_columns_mismatch(self):
+        with pytest.raises(ValueError, match='beta shape does not match classes'):
+            config_module.ClassifierConfig(
+                classifier_name='bad_beta',
+                classes=['a', 'b'],
+                beta=np.zeros((3, 1), dtype=np.float32),
+                beta_bias=np.zeros(2, dtype=np.float32),
+            )
+
+    def test_classifier_config_rejects_threshold_array_length_mismatch(self):
+        with pytest.raises(ValueError, match='threshold_array shape does not match classes'):
+            config_module.ClassifierConfig(
+                classifier_name='bad_threshold',
+                classes=['a', 'b'],
+                beta=np.zeros((3, 2), dtype=np.float32),
+                beta_bias=np.zeros(2, dtype=np.float32),
+                threshold_array=np.array([0.1], dtype=np.float32),
+            )

@@ -68,7 +68,7 @@ def get_filelist(baw_filter, filelist_path, limit=-1):
         filter_params=payload,
         save_path=Path(filelist_path).parent,
         page_size=500,
-        limit=None,
+        limit=limit if limit > 0 else None,
         use_cache=True
     )
 

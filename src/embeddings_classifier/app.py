@@ -11,8 +11,6 @@ import argparse
 import concurrent.futures
 from collections import Counter, deque
 import json
-import base64
-import binascii
 from importlib.metadata import PackageNotFoundError, version as get_distribution_version
 import os
 import sys
@@ -31,6 +29,9 @@ import pyarrow.parquet as pq
 import pyarrow.csv as pcsv
 from urllib.parse import urlparse, urlunparse, ParseResult, parse_qs, urlencode
 from dataclasses import dataclass
+
+from .config import ClassifierConfig, ClassifierConfigList
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,7 +65,7 @@ class ClassifierItem:
     """Dataclass to hold the result, config, outputpath of a classifier run on a single item."""
 
     # the normalized config for one single classifier
-    config: Dict
+    config: ClassifierConfig
 
     # the output path template (including the <classifier_name> placeholder)
     output_path_template: Optional[Path] = None
@@ -90,7 +91,7 @@ class ClassifierItem:
         # set the output path for this item, based on the output_path_template and the classifier name in the config.
         self.construct_output_path()
 
-        if self.output_path is not None and self.config.get('skip_existing', True) and self.output_path.exists():
+        if self.output_path is not None and self.config.skip_existing and self.output_path.exists():
             self.success = True
             self.message = f"Output file {self.output_path} already exists, skipping processing."
 
@@ -104,7 +105,7 @@ class ClassifierItem:
             return
         
         output_path_template = self.output_path_template
-        classifier_name = self.config['classifier_name']
+        classifier_name = self.config.classifier_name
 
         # use absolute paths for easier debugging
         if not output_path_template.is_absolute():
@@ -137,114 +138,6 @@ def check_output_clashes(resolved_paths):
         )
 
 
-def resolve_classifier_name(config: Dict[str, Any], index: int) -> str:
-    """Resolve classifier name from config with deterministic fallbacks."""
-    configured_name = config.get('classifier_name') or config.get('name')
-    if isinstance(configured_name, str) and configured_name.strip():
-        return configured_name.strip()
-
-    classes = config.get('classifier', {}).get('classes', [])
-    if isinstance(classes, list) and len(classes) == 1:
-        class_name = re.sub(r'\s+', '_', str(classes[0]).strip().lower())
-        return class_name if class_name else f"classifier_{index}"
-
-    if isinstance(classes, list) and len(classes) > 1:
-        return f"classifier_{index}_{len(classes)}class"
-
-    return f"classifier_{index}"
-
-
-@dataclass
-class ClassifierConfig:
-    """Normalized classifier configuration container."""
-    configs: List[Dict[str, Any]]
-
-    @staticmethod
-    def _normalize_configs(configs: Any) -> List[Dict[str, Any]]:
-        if not isinstance(configs, list):
-            configs = [configs]
-
-        normalized_configs = []
-
-        for i, config in enumerate(configs):
-            if not isinstance(config, dict):
-                raise ValueError(f"Config at index {i} must be an object")
-
-            # Validate required fields
-            if 'classifier' not in config:
-                # Assume the entire JSON is the classifier and use defaults.
-                if 'classes' not in config:
-                    raise ValueError("Config must contain 'classifier' section")
-                config = {
-                    'classifier': config
-                }
-
-            classifier = config['classifier']
-            required_fields = ['classes', 'beta', 'beta_bias']
-            for field in required_fields:
-                if field not in classifier:
-                    raise ValueError(f"Classifier must contain '{field}' field")
-
-            normalized: Dict[str, Any] = dict(config)
-            normalized['classifier'] = dict(classifier)
-
-            # Canonical per-class threshold array is computed once at normalization.
-            normalized['threshold_array'] = build_threshold_array(
-                normalized['classifier']['classes'],
-                normalized.get('threshold', 0.0),
-            )
-
-            if 'save_empty' not in normalized:
-                normalized['save_empty'] = True
-
-            if 'skip_existing' not in normalized:
-                normalized['skip_existing'] = True
-
-            # Canonical classifier name is resolved once during normalization.
-            normalized['classifier_name'] = resolve_classifier_name(normalized, i)
-
-            normalized_configs.append(normalized)
-
-        return normalized_configs
-
-    @classmethod
-    def from_dict(cls, config: Dict[str, Any]) -> "ClassifierConfig":
-        return cls.from_any(config)
-
-    @classmethod
-    def from_json(cls, config_path: Union[str, Path]) -> "ClassifierConfig":
-        with open(config_path, 'r', encoding='utf-8') as f:
-            raw = json.load(f)
-        return cls.from_any(raw)
-
-    @classmethod
-    def from_any(
-        cls,
-        config_data: Union["ClassifierConfig", Dict[str, Any], List[Dict[str, Any]], str, Path],
-    ) -> "ClassifierConfig":
-        if isinstance(config_data, cls):
-            return config_data
-
-        if isinstance(config_data, (str, Path)):
-            return cls.from_json(config_data)
-
-        if not isinstance(config_data, (dict, list)):
-            raise TypeError(f"Unsupported config type: {type(config_data)}")
-
-        normalized_configs = cls._normalize_configs(config_data)
-        for config in normalized_configs:
-            classifier_config = config['classifier']
-            beta, beta_bias = deserialize_classifier_params(classifier_config)
-            classifier_config['beta'] = beta
-            classifier_config['beta_bias'] = beta_bias
-
-            logging.info("Classes found in config: %s", classifier_config['classes'])
-            logging.info("Beta shape: %s, Beta bias shape: %s", beta.shape, beta_bias.shape)
-
-        return cls(configs=normalized_configs)
-
-    def as_list(self) -> List[Dict[str, Any]]:
-        return self.configs
 
 
 
@@ -316,77 +209,9 @@ def get_parsed_url(url: str) -> ParseResult:
 
 def load_config(config_path: str) -> List[Dict[str, Any]]:
     """Load and validate configuration file."""
-    return ClassifierConfig.from_json(config_path).as_list()
+    return ClassifierConfigList.from_json(config_path).as_list()
 
 
-def deserialize_classifier_params(classifier_config: Dict[str, Any]) -> tuple:
-    """Deserialize beta weights and bias from base64 encoded strings."""
-    
-    def do_decode(x: str) -> np.ndarray:
-        flat = np.frombuffer(base64.b64decode(x.encode('ascii')), dtype=np.float32)
-        return flat
-        
-    try:
-        beta_flat = do_decode(classifier_config['beta'])
-        num_rows = len(beta_flat) // len(classifier_config['classes'])
-        num_cols = len(classifier_config['classes'])
-        beta = beta_flat.reshape(num_rows, num_cols)
-        beta_bias = do_decode(classifier_config['beta_bias'])
-        return beta, beta_bias
-    
-    except (ValueError, TypeError, KeyError, binascii.Error) as e:
-        logging.error("Error deserializing classifier parameters: %s", e)
-        raise ValueError(f"Error deserializing classifier parameters: {e}") from e
-
-
-def build_threshold_array(classes: List[str], threshold: Any) -> np.ndarray:
-    """Return one float32 threshold per class.
-
-    Accepted threshold formats:
-    - scalar number: applied to all classes
-    - None: no threshold for all classes
-    - list: one value per class (number or None)
-    - dict: class -> value (number or None); missing classes default to 0.0
-    """
-
-    default_threshold = 0.0
-
-    # Canonicalize thresholds so we always have one value per class.
-    # Allowed per-class values are float (enforce threshold) or None (no threshold for that class).
-    if isinstance(threshold, dict):
-        # Missing classes default to 0.0 for consistency with existing behavior.
-        per_class_thresholds = {cls: threshold.get(cls, default_threshold) for cls in classes}
-    elif isinstance(threshold, list):
-        if len(threshold) != len(classes):
-            raise ValueError(
-                f"Threshold list length ({len(threshold)}) must match number of classes ({len(classes)})"
-            )
-        per_class_thresholds = dict(zip(classes, threshold))
-    elif threshold is None or isinstance(threshold, (int, float, np.integer, np.floating)):
-        per_class_thresholds = {cls: threshold for cls in classes}
-    else:
-        raise TypeError(
-            "Threshold must be one of: float/int, None, list (one per class), "
-            "or dict mapping class name to threshold."
-        )
-
-    for cls, value in per_class_thresholds.items():
-        if value is None:
-            continue
-        if not isinstance(value, (int, float, np.integer, np.floating)):
-            raise TypeError(
-                f"Threshold for class '{cls}' must be a number or None, got {type(value).__name__}."
-            )
-        per_class_thresholds[cls] = float(value)
-
-    # None means no threshold for that class, so use the minimum float32 sentinel.
-    return np.array(
-        [
-            np.finfo(np.float32).min if per_class_thresholds[cls] is None else per_class_thresholds[cls]
-            for cls in classes
-        ],
-        dtype=np.float32,
-    )
 
 
 
@@ -408,15 +233,15 @@ def process_table(
     metadata_columns = ['source', 'channel', 'offset']
 
     # classifier parameters from the config
-    beta = item.config['classifier']['beta']
-    beta_bias = item.config['classifier']['beta_bias']
-    classes = item.config['classifier']['classes']
+    beta = item.config.beta
+    beta_bias = item.config.beta_bias
+    classes = item.config.classes
 
     # threshold array was previously built from the config threshold parameter during normalization
-    threshold_array = item.config['threshold_array']
+    threshold_array = item.config.threshold_array
 
     # whether to save an output file even if no scores pass the threshold
-    save_empty = item.config['save_empty']
+    save_empty = item.config.save_empty
 
     try:
         
@@ -536,7 +361,7 @@ def get_table_from_path(input_path: Union[Path, ParseResult]) -> Tuple[Optional[
 
 
 def init_items(
-    configs: ClassifierConfig,
+    configs: ClassifierConfigList,
     output_path_template: Optional[Path],
 ) -> List[ClassifierItem]:
     """
@@ -546,7 +371,7 @@ def init_items(
     """
     items = [
         ClassifierItem(output_path_template=output_path_template, config=config)
-        for config in configs.as_list()
+        for config in configs
     ]
 
     check_output_clashes([item.output_path for item in items])     
@@ -556,7 +381,7 @@ def init_items(
 def _process_single_input(
     input: Union[pa.Table, Path, ParseResult],
     output_path_template: Optional[Path],
-    configs: ClassifierConfig,
+    configs: ClassifierConfigList,
 ) -> List[ClassifierItem]:
     """Process a preloaded table, filepath or URL for all classifier configs."""
  
@@ -593,7 +418,7 @@ def _process_single_input(
             # already exists, skipping
             continue
       
-        logging.info("Processing file: %s for classifier %s", source, item.config['classifier_name'])
+        logging.info("Processing file: %s for classifier %s", source, item.config.classifier_name)
         # updates item results in place
         process_table(
             table, 
@@ -605,14 +430,14 @@ def _process_single_input(
 
 def classify_table(
     table: pa.Table,
-    config: Union[ClassifierConfig, Dict[str, Any], List[Dict[str, Any]], str, Path],
+    config: Union[ClassifierConfigList, ClassifierConfig, Dict[str, Any], List[Dict[str, Any]], str, Path],
     output_path: Optional[Union[str, Path]] = None,
 ) -> List[ClassifierItem]:
     """Classify an in-memory Arrow table directly."""
     if not isinstance(table, pa.Table):
         raise TypeError(f"Expected pyarrow.Table, got {type(table)}")
 
-    configs = ClassifierConfig.from_any(config)
+    configs = ClassifierConfigList.from_any(config)
     output_path_template = None
     if output_path is not None:
         output_path_template = get_full_output_path_templates(
@@ -625,7 +450,7 @@ def classify_table(
 
 def classify_dataframe(
     dataframe: Any,
-    config: Union[ClassifierConfig, Dict[str, Any], List[Dict[str, Any]], str, Path],
+    config: Union[ClassifierConfigList, ClassifierConfig, Dict[str, Any], List[Dict[str, Any]], str, Path],
     output_path: Optional[Union[str, Path]] = None,
 ) -> List[ClassifierItem]:
     """Classify a pandas DataFrame by converting it to an Arrow table first."""
@@ -784,7 +609,7 @@ def classify(input_path, output_path, config_path, workers=1):
 
     logging.debug('classify command called')
 
-    configs = ClassifierConfig.from_any(config_path)
+    configs = ClassifierConfigList.from_any(config_path)
 
     if input_path.is_file():
 
