@@ -125,7 +125,7 @@ class TestUtilityFunctions:
     def test_init_items_raises_on_sanitized_name_collision(self, sample_data):
         """Colliding sanitized classifier names should fail fast with a clear error."""
         first = list(config_module.ClassifierConfigList.from_any(sample_data['config_path']))[0]
-        first.classifier_name = 'A B'
+        first = dataclasses.replace(first, classifier_name='A B')
         second = dataclasses.replace(first, classifier_name='A_B')
         configs = config_module.ClassifierConfigList(configs=[first, second])
 
@@ -225,8 +225,146 @@ class TestUtilityFunctions:
 
         serialized = config.as_dict()
 
-        assert serialized['model_config'] == {'foo': 'bar'}
-        assert serialized['threshold'] == {'a': 0.1, 'b': 0.2}
+        assert serialized['classifier']['model_config'] == {'foo': 'bar'}
+        assert serialized['run_config']['threshold'] == {'a': 0.1, 'b': 0.2}
+
+    def test_classifier_config_is_frozen(self):
+        config = config_module.ClassifierConfig(
+            classifier_name='test_classifier',
+            classes=['a'],
+            beta=np.zeros((1, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            config.classifier_name = 'new_name'
+
+    def test_resolve_classifier_name_uses_nested_classifier_name(self):
+        config = {
+            'classifier': {
+                'classes': ['owl'],
+                'classifier_name': 'Nested Owl Name',
+            }
+        }
+        assert config_module.resolve_classifier_name(config, 0) == 'Nested Owl Name'
+
+    def test_classifier_config_list_from_recognizers_with_flat_global_run_config(self):
+        beta = base64.b64encode(np.array([0.0], dtype=np.float32).tobytes()).decode('ascii')
+        beta_bias = base64.b64encode(np.array([0.0], dtype=np.float32).tobytes()).decode('ascii')
+
+        payload = {
+            'recognizers': [
+                {
+                    'classifier': {
+                        'classes': ['a'],
+                        'beta': beta,
+                        'beta_bias': beta_bias,
+                    }
+                }
+            ],
+            'run_config': {
+                'save_empty': False,
+                'skip_existing': False,
+                'threshold': 0.3,
+            },
+        }
+
+        configs = config_module.ClassifierConfigList.from_any(payload)
+        cfg = list(configs)[0]
+        assert cfg.save_empty is False
+        assert cfg.skip_existing is False
+        np.testing.assert_allclose(cfg.threshold_array, np.array([0.3], dtype=np.float32))
+
+    def test_classifier_config_list_from_recognizers_with_name_keyed_run_config(self):
+        beta = base64.b64encode(np.array([0.0], dtype=np.float32).tobytes()).decode('ascii')
+        beta_bias = base64.b64encode(np.array([0.0], dtype=np.float32).tobytes()).decode('ascii')
+
+        payload = {
+            'recognizers': [
+                {
+                    'classifier': {
+                        'classes': ['a'],
+                        'beta': beta,
+                        'beta_bias': beta_bias,
+                        'classifier_name': 'alpha',
+                    }
+                },
+                {
+                    'classifier': {
+                        'classes': ['b'],
+                        'beta': beta,
+                        'beta_bias': beta_bias,
+                        'classifier_name': 'beta',
+                    }
+                },
+            ],
+            'run_config': {
+                'beta': {'threshold': 0.8},
+            },
+        }
+
+        configs = list(config_module.ClassifierConfigList.from_any(payload))
+        np.testing.assert_allclose(configs[0].threshold_array, np.array([0.0], dtype=np.float32))
+        np.testing.assert_allclose(configs[1].threshold_array, np.array([0.8], dtype=np.float32))
+
+    def test_classifier_config_list_from_recognizers_with_parallel_run_config(self):
+        beta = base64.b64encode(np.array([0.0], dtype=np.float32).tobytes()).decode('ascii')
+        beta_bias = base64.b64encode(np.array([0.0], dtype=np.float32).tobytes()).decode('ascii')
+
+        payload = {
+            'recognizers': [
+                {'classifier': {'classes': ['a'], 'beta': beta, 'beta_bias': beta_bias}},
+                {'classifier': {'classes': ['b'], 'beta': beta, 'beta_bias': beta_bias}},
+            ],
+            'run_config': [
+                {'threshold': 0.1},
+                {'threshold': 0.9},
+            ],
+        }
+
+        configs = list(config_module.ClassifierConfigList.from_any(payload))
+        np.testing.assert_allclose(configs[0].threshold_array, np.array([0.1], dtype=np.float32))
+        np.testing.assert_allclose(configs[1].threshold_array, np.array([0.9], dtype=np.float32))
+
+    def test_classifier_config_list_rejects_mixed_global_run_config_dict(self):
+        beta = base64.b64encode(np.array([0.0], dtype=np.float32).tobytes()).decode('ascii')
+        beta_bias = base64.b64encode(np.array([0.0], dtype=np.float32).tobytes()).decode('ascii')
+
+        payload = {
+            'recognizers': [
+                {'classifier': {'classes': ['a'], 'beta': beta, 'beta_bias': beta_bias}},
+            ],
+            'run_config': {
+                'threshold': 0.2,
+                'koala': {'threshold': 0.9},
+            },
+        }
+
+        with pytest.raises(ValueError, match='cannot mix run-param keys with classifier-name keys'):
+            config_module.ClassifierConfigList.from_any(payload)
+
+    def test_classifier_config_list_rejects_non_dict_name_keyed_value(self):
+        beta = base64.b64encode(np.array([0.0], dtype=np.float32).tobytes()).decode('ascii')
+        beta_bias = base64.b64encode(np.array([0.0], dtype=np.float32).tobytes()).decode('ascii')
+
+        payload = {
+            'recognizers': [
+                {
+                    'classifier': {
+                        'classes': ['a'],
+                        'beta': beta,
+                        'beta_bias': beta_bias,
+                        'classifier_name': 'koala',
+                    }
+                }
+            ],
+            'run_config': {
+                'koala': 0.5,
+            },
+        }
+
+        with pytest.raises(ValueError, match="must be an object or None"):
+            config_module.ClassifierConfigList.from_any(payload)
 
     def test_classifier_config_rejects_beta_columns_mismatch(self):
         with pytest.raises(ValueError, match='beta shape does not match classes'):

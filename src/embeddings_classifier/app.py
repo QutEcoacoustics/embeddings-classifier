@@ -62,7 +62,7 @@ def _get_http_session() -> requests.Session:
 
 @dataclass
 class ClassifierItem:
-    """Dataclass to hold the result, config, outputpath of a classifier run on a single item."""
+    """Dataclass to hold the result, config, outputpath of a single classifier run on a single item."""
 
     # the normalized config for one single classifier
     config: ClassifierConfig

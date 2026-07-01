@@ -6,6 +6,7 @@ Test suite for the parquet processor main function using pytest.
 import json
 import os
 from pathlib import Path
+import re
 import pytest
 from unittest.mock import patch, MagicMock
 from types import SimpleNamespace
@@ -26,7 +27,10 @@ import embeddings_classifier.config as config_module
 
 def _first_classifier_folder(config_path):
     configs = list(config_module.ClassifierConfigList.from_any(config_path))
-    return configs[0].classifier_name
+    classifier_name = configs[0].classifier_name
+    classifier_name = re.sub(r'\s+', '_', classifier_name)
+    classifier_name = re.sub(r'[^A-Za-z0-9_-]', '', classifier_name)
+    return classifier_name
 
 
 class TestClassifyFunction:
