@@ -49,28 +49,44 @@ def normalize_single_config_schema(config: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(config, dict):
         raise ValueError("Config must be an object")
 
-    classifier_in = config.get('classifier') if isinstance(config.get('classifier'), dict) else {}
-    run_in = config.get('run_config') if isinstance(config.get('run_config'), dict) else {}
+    def from_options(options: List[str], data) -> Optional[Any]:
+        # for a list of possible keys, return the value of the first matching one
+        # reject configs that specify more than one alias with different values.
+        found_key = None
+        found_value = None
+        for key in options:
+            if key in data:
+                value = data[key]
+                if found_key is None:
+                    found_key = key
+                    found_value = value
+                    continue
 
-    classifier: Dict[str, Any] = {
-        'classes': classifier_in.get('classes', config.get('classes')),
-        'beta': classifier_in.get('beta', config.get('beta')),
-        'beta_bias': classifier_in.get('beta_bias', config.get('beta_bias')),
-        'classifier_name': (
-            classifier_in.get('classifier_name')
-            or classifier_in.get('name')
-            or config.get('classifier_name')
-            or config.get('name')
-        ),
-        'model_config': classifier_in.get('model_config', config.get('model_config')),
-    }
+                if value != found_value:
+                    raise ValueError(f"Multiple keys found: {found_key}, {key}")
+        return found_value
+    
+    def check_nested(key, nested_dict_name, names=None):
+        if names is None:
+            names = [key]
+        # checks the config for the key in either the nested dict or the top-level config
+        nested_dict = config.get(nested_dict_name)
+        if isinstance(nested_dict, dict):
+            if any(key in nested_dict for key in names):
+                return from_options(names, nested_dict)
+        return from_options(names, config)
+    
+    classifier_name_key_options = ['classifier_name', 'name', 'recognizer_name']
 
-    run_config = {
-        'threshold': run_in.get('threshold', config.get('threshold', 0.0)),
-        'threshold_array': run_in.get('threshold_array', config.get('threshold_array')),
-        'save_empty': run_in.get('save_empty', config.get('save_empty', True)),
-        'skip_existing': run_in.get('skip_existing', config.get('skip_existing', True)),
-    }
+    classifier_names = ['classes', 'beta', 'beta_bias', 'model_config']
+    run_names = ['threshold', 'threshold_array', 'save_empty', 'skip_existing']
+
+    classifier = {key: check_nested(key, 'classifier') for key in classifier_names}
+    classifier['classifier_name'] = check_nested('classifier_name', 'classifier', classifier_name_key_options)
+    
+    run_config = {key: check_nested(key, 'run_config') for key in run_names}
+    # Only include run_config keys that have non-None values
+    run_config = {key: value for key, value in run_config.items() if value is not None}
 
     return {
         'classifier': classifier,
@@ -92,12 +108,21 @@ def _validate_container_run_config(container_run_config: Optional[Any], recogniz
         return
 
     if isinstance(container_run_config, dict):
+        # can be either a flat run-param dict or a name-keyed dict for per-classifier overrides, but not both
         has_run_param_keys = any(key in RUN_PARAM_KEYS for key in container_run_config.keys())
         has_non_run_param_keys = any(key not in RUN_PARAM_KEYS for key in container_run_config.keys())
         if has_run_param_keys and has_non_run_param_keys:
             raise ValueError(
                 "Container run_config cannot mix run-param keys with classifier-name keys"
             )
+        
+        # If name-keyed (has non-run-param keys), validate all values are dicts or None
+        if has_non_run_param_keys:
+            for name, value in container_run_config.items():
+                if value is not None and not isinstance(value, dict):
+                    raise ValueError(
+                        f"Container run_config entry for classifier '{name}' must be an object or None"
+                    )
         return
 
     raise ValueError("Container run_config must be an object or list")
@@ -142,24 +167,20 @@ def _resolve_global_run_config_for_classifier(
 
 
 def resolve_classifier_name(config: Dict[str, Any], index: int, fail_on_missing: bool = False) -> str:
-    """Resolve a classifier name from any one of a few possible keys. 
-       If it's not set, generate a name based on the classes or index.
+    """Resolve classifier name from canonical schema.
+       If the explicit 
+    ``classifier_name`` is missing, fallback naming is derived from classes/index.
     """
-    classifier = config.get('classifier') if isinstance(config.get('classifier'), dict) else {}
+    classifier = config['classifier']
 
-    configured_name = (
-        classifier.get('classifier_name')
-        or classifier.get('name')
-        or config.get('classifier_name')
-        or config.get('name')
-    )
+    configured_name = classifier.get('classifier_name')
 
     if isinstance(configured_name, str) and configured_name.strip():
         return configured_name.strip()
     elif fail_on_missing:
         raise ValueError("Unable to resolve classifier name from config.")
 
-    classes = config.get('classifier', {}).get('classes', [])
+    classes = classifier.get('classes', [])
     if isinstance(classes, list) and len(classes) == 1:
         class_name = re.sub(r'\s+', '_', str(classes[0]).strip().lower())
         return class_name if class_name else f"classifier_{index}"
@@ -259,11 +280,11 @@ class ClassifierConfig:
     classes: List[str]
     beta: np.ndarray
     beta_bias: np.ndarray
-    model_config: Dict[str, Any] = None  # Optional additional model config
+    model_config: Optional[Dict[str, Any]] = None  # Optional additional model config
 
     # run params
     threshold: Any = 0.0
-    threshold_array: np.ndarray = None
+    threshold_array: Optional[np.ndarray] = None
     save_empty: bool = True
     skip_existing: bool = True
 
@@ -311,6 +332,8 @@ class ClassifierConfig:
         else:
             object.__setattr__(self, 'threshold_array', np.asarray(self.threshold_array, dtype=np.float32))
 
+        # At this point, threshold_array is guaranteed to be an ndarray (never None)
+        assert isinstance(self.threshold_array, np.ndarray)
         if self.threshold_array.shape != (len(self.classes),):
             raise ValueError(
                 "threshold_array shape does not match classes: "
@@ -345,7 +368,8 @@ class ClassifierConfig:
         # Canonical classifier name is resolved once during normalization.
         classifier_name = resolve_classifier_name(normalized_input, index)
 
-        merged_run_config = dict(normalized_input['run_config'])
+        # Start with per-recognizer run_config, apply global overrides
+        merged_run_config = dict(normalized_input.get('run_config', {}))
         global_override = _resolve_global_run_config_for_classifier(
             run_config,
             index=index,

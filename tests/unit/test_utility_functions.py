@@ -132,13 +132,13 @@ class TestUtilityFunctions:
         with pytest.raises(ValueError, match='resolve to the same output path'):
             app.init_items(configs, Path(sample_data['output_dir']) / '<classifier_name>' / 'result.csv')
 
-    def test_resolve_classifier_name_uses_name_when_classifier_name_missing(self):
-        """The generic 'name' key should be accepted as classifier name fallback."""
+    def test_resolve_classifier_name_raises_when_missing_and_required(self):
+        """Missing explicit classifier_name should raise when fail_on_missing is True."""
         config = {
-            'name': 'Powerful Owl',
             'classifier': {'classes': ['owl']},
         }
-        assert config_module.resolve_classifier_name(config, 0) == 'Powerful Owl'
+        with pytest.raises(ValueError, match='Unable to resolve classifier name from config'):
+            config_module.resolve_classifier_name(config, 0, fail_on_missing=True)
 
     def test_resolve_classifier_name_single_class_fallback(self):
         """Single-class classifiers should derive name from class label."""
