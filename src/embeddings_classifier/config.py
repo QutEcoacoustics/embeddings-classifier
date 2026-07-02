@@ -402,6 +402,26 @@ class ClassifierConfig:
 
         return cls.from_dict(config_data, index=index, run_config=run_config)
 
+    @property
+    def embedding_model_name(self) -> Optional[str]:
+        model_config = self.model_config if isinstance(self.model_config, dict) else {}
+
+        # perch model config schema
+        perch_model_version = model_config.get('model_config', {}).get('tfhub_version')
+        if str(perch_model_version) in ["4", "8"]:
+            return "perch_8"
+
+        # infer model name from embedding dimensions
+        logging.warning("Embedding model name not explicitly set in config. Inferring from beta shape.")
+        shape_map = {
+            1280: "perch_8",
+            1536: "perch_v2",
+            1024: "birdnet_v2.4"
+
+        }
+        return shape_map.get(self.beta.shape[0], None)
+        
+
     def as_dict(self) -> Dict[str, Any]:
         return {
             'classifier': {
@@ -428,6 +448,7 @@ class ClassifierConfigList:
 
     def __post_init__(self) -> None:
         self.ensure_unique_classifier_names()
+        self.ensure_compatible_embedding_model_names()
 
     @classmethod
     def from_json(cls, config_path: Union[str, Path]) -> "ClassifierConfigList":
@@ -507,6 +528,27 @@ class ClassifierConfigList:
         if duplicates:
             duplicates_str = ', '.join(duplicates)
             raise ValueError(f"Duplicate classifier_name values are not allowed: {duplicates_str}")
+
+    def ensure_compatible_embedding_model_names(self) -> None:
+        """accesses a property that raises if there are multiple different
+          embedding_model_names across configs."""
+        _ = self.embedding_model_name
+
+
+    @property
+    def embedding_model_name(self) -> Optional[str]:
+        embedding_model_names = {
+            model_name for model_name in (config.embedding_model_name for config in self.configs)
+            if model_name is not None
+        }
+        if not embedding_model_names:
+            return None
+        elif len(embedding_model_names) > 1:
+            raise ValueError(
+                "All classifier configs must have the same embedding_model_name or None: "
+                f"{', '.join(sorted(embedding_model_names))}"
+            )
+        return next(iter(embedding_model_names))
 
     def as_list(self) -> List[Dict[str, Any]]:
         return [config.as_dict() for config in self.configs]

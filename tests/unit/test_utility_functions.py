@@ -384,3 +384,122 @@ class TestUtilityFunctions:
                 beta_bias=np.zeros(2, dtype=np.float32),
                 threshold_array=np.array([0.1], dtype=np.float32),
             )
+
+    def test_classifier_config_embedding_model_name_defaults_to_none(self):
+        config = config_module.ClassifierConfig(
+            classifier_name='test_classifier',
+            classes=['a'],
+            beta=np.zeros((1, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+
+        assert config.embedding_model_name is None
+
+    def test_classifier_config_list_embedding_model_name_returns_none_when_all_none(self):
+        first = config_module.ClassifierConfig(
+            classifier_name='first',
+            classes=['a'],
+            beta=np.zeros((1, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+        second = config_module.ClassifierConfig(
+            classifier_name='second',
+            classes=['b'],
+            beta=np.zeros((1, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+
+        configs = config_module.ClassifierConfigList(configs=[first, second])
+
+        assert configs.embedding_model_name is None
+
+    def test_classifier_config_embedding_model_name_perch_from_tfhub_v4(self):
+        config = config_module.ClassifierConfig(
+            classifier_name='test_classifier',
+            classes=['a'],
+            beta=np.zeros((10, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+            model_config={'model_config': {'tfhub_version': 4}},
+        )
+
+        assert config.embedding_model_name == 'perch_8'
+
+    def test_classifier_config_embedding_model_name_perch_from_tfhub_v8(self):
+        config = config_module.ClassifierConfig(
+            classifier_name='test_classifier',
+            classes=['a'],
+            beta=np.zeros((10, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+            model_config={'model_config': {'tfhub_version': 8}},
+        )
+
+        assert config.embedding_model_name == 'perch_8'
+
+    def test_classifier_config_embedding_model_name_perch_v2_from_shape(self):
+        config = config_module.ClassifierConfig(
+            classifier_name='test_classifier',
+            classes=['a'],
+            beta=np.zeros((1536, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+            model_config=None,
+        )
+
+        assert config.embedding_model_name == 'perch_v2'
+
+    def test_classifier_config_embedding_model_name_birdnet_from_shape(self):
+        config = config_module.ClassifierConfig(
+            classifier_name='test_classifier',
+            classes=['a'],
+            beta=np.zeros((1024, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+            model_config=None,
+        )
+
+        assert config.embedding_model_name == 'birdnet_v2.4'
+
+    def test_classifier_config_list_rejects_incompatible_embedding_model_names(self, monkeypatch):
+        first = config_module.ClassifierConfig(
+            classifier_name='first',
+            classes=['a'],
+            beta=np.zeros((1, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+        second = config_module.ClassifierConfig(
+            classifier_name='second',
+            classes=['b'],
+            beta=np.zeros((1, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+
+        monkeypatch.setattr(
+            config_module.ClassifierConfig,
+            'embedding_model_name',
+            property(lambda self: 'model_a' if self.classifier_name == 'first' else 'model_b'),
+        )
+
+        with pytest.raises(ValueError, match='same embedding_model_name or None'):
+            config_module.ClassifierConfigList(configs=[first, second])
+
+    def test_classifier_config_list_embedding_model_name_returns_unique_value(self, monkeypatch):
+        first = config_module.ClassifierConfig(
+            classifier_name='first',
+            classes=['a'],
+            beta=np.zeros((1, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+        second = config_module.ClassifierConfig(
+            classifier_name='second',
+            classes=['b'],
+            beta=np.zeros((1, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+
+        monkeypatch.setattr(
+            config_module.ClassifierConfig,
+            'embedding_model_name',
+            property(lambda self: 'shared_model'),
+        )
+
+        configs = config_module.ClassifierConfigList(configs=[first, second])
+
+        assert configs.embedding_model_name == 'shared_model'
