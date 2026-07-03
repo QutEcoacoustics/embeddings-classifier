@@ -6,6 +6,7 @@ Test suite for the parquet processor main function using pytest.
 import json
 import os
 from pathlib import Path
+import re
 import pytest
 from unittest.mock import patch, MagicMock
 from types import SimpleNamespace
@@ -21,11 +22,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 from helpers import TestHelpers
 from unit_helpers import UnitTestHelpers
 import embeddings_classifier.app as app
+import embeddings_classifier.config as config_module
 
 
 def _first_classifier_folder(config_path):
-    configs = app.ClassifierConfig.from_any(config_path).as_list()
-    return app.resolve_classifier_name(configs[0], 0)
+    configs = list(config_module.ClassifierConfigList.from_any(config_path))
+    classifier_name = configs[0].classifier_name
+    classifier_name = re.sub(r'\s+', '_', classifier_name)
+    classifier_name = re.sub(r'[^A-Za-z0-9_-]', '', classifier_name)
+    return classifier_name
 
 
 class TestClassifyFunction:
@@ -361,7 +366,7 @@ class TestClassifyFunction:
     def test_process_single_input_in_memory_only(self, sample_data):
         """Shared single-input path should support no-write mode."""
         table = sample_data['sample_table']
-        configs = app.ClassifierConfig.from_any(sample_data['config_path'])
+        configs = config_module.ClassifierConfigList.from_any(sample_data['config_path'])
 
         results = app._process_single_input(table, None, configs)
 

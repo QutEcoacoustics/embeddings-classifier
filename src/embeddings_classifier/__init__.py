@@ -1,8 +1,11 @@
 """Embeddings classifier package."""
 
 from importlib.metadata import PackageNotFoundError, version
-from .app import (
+from .config import (
     ClassifierConfig,
+    ClassifierConfigList,
+)
+from .app import (
     ClassifierItem,
     classify,
     classify_dataframe,
@@ -17,6 +20,7 @@ except PackageNotFoundError:
 __all__ = [
     "__version__",
     "ClassifierConfig",
+    "ClassifierConfigList",
     "ClassifierItem",
     "classify",
     "classify_table",
