@@ -5,7 +5,7 @@ import base64
 import binascii
 import logging
 from pathlib import Path
-from typing import Dict, Any, Union, List, Iterator, Optional
+from typing import Dict, Any, Union, List, Iterator, Optional, Tuple
 from dataclasses import dataclass, field
 import re
 
@@ -280,6 +280,7 @@ class ClassifierConfig:
     beta: np.ndarray
     beta_bias: np.ndarray
     model_config: Optional[Dict[str, Any]] = None  # Optional additional model config
+    embedding_dim: Tuple[int, ...] = field(init=False, default=())
     embedding_model_name: Optional[str] = field(init=False, default=None)
 
     # run params
@@ -291,10 +292,11 @@ class ClassifierConfig:
     def __post_init__(self) -> None:
         # this is a frozen dataclass, so we need to set properties this way. 
         # we only do this once here during post-init, so it's safe to bypass the frozen restriction.
-        def set(name, val): object.__setattr__(self, name, val)
+        def set_attr(name, val):
+            object.__setattr__(self, name, val)
 
         # Keep classes as a concrete list for deterministic ordering and serialization.
-        set('classes', list(self.classes))
+        set_attr('classes', list(self.classes))
 
         # Support both encoded (str) and already-materialized (ndarray/list) params.
         if isinstance(self.beta, str) or isinstance(self.beta_bias, str):
@@ -307,11 +309,11 @@ class ClassifierConfig:
                     'classes': self.classes,
                 }
             )
-            set('beta', beta)
-            set('beta_bias', beta_bias)
+            set_attr('beta', beta)
+            set_attr('beta_bias', beta_bias)
         else:
-            set('beta', np.asarray(self.beta, dtype=np.float32))
-            set('beta_bias', np.asarray(self.beta_bias, dtype=np.float32))
+            set_attr('beta', np.asarray(self.beta, dtype=np.float32))
+            set_attr('beta_bias', np.asarray(self.beta_bias, dtype=np.float32))
 
         if self.beta.ndim != 2:
             raise ValueError(f"beta must be a 2D array, got shape {self.beta.shape}")
@@ -322,8 +324,11 @@ class ClassifierConfig:
                 f"expected {len(self.classes)} columns, got {self.beta.shape[1]}"
             )
 
+        # Embedding dimensions are all beta axes except the trailing class axis.
+        set_attr('embedding_dim', tuple(int(x) for x in self.beta.shape[:-1]))
+
         # Accept common bias layouts and canonicalize to 1D [num_classes].
-        set('beta_bias', np.asarray(self.beta_bias, dtype=np.float32).reshape(-1))
+        set_attr('beta_bias', np.asarray(self.beta_bias, dtype=np.float32).reshape(-1))
         if self.beta_bias.shape[0] != len(self.classes):
             raise ValueError(
                 "beta_bias shape does not match classes: "
@@ -332,9 +337,9 @@ class ClassifierConfig:
 
         # Canonical per-class threshold array is computed once at normalization.
         if self.threshold_array is None:
-            set('threshold_array', build_threshold_array(self.classes, self.threshold))
+            set_attr('threshold_array', build_threshold_array(self.classes, self.threshold))
         else:
-            set('threshold_array', np.asarray(self.threshold_array, dtype=np.float32))
+            set_attr('threshold_array', np.asarray(self.threshold_array, dtype=np.float32))
 
         # At this point, threshold_array is guaranteed to be an ndarray (never None)
         assert isinstance(self.threshold_array, np.ndarray)
@@ -344,12 +349,12 @@ class ClassifierConfig:
                 f"expected {(len(self.classes),)}, got {self.threshold_array.shape}"
             )
 
-        set('classifier_name', str(self.classifier_name).strip())
+        set_attr('classifier_name', str(self.classifier_name).strip())
         if not self.classifier_name:
             raise ValueError("classifier_name cannot be empty")
-        set('save_empty', bool(self.save_empty))
-        set('skip_existing', bool(self.skip_existing))
-        set('embedding_model_name', self._resolve_embedding_model_name())
+        set_attr('save_empty', bool(self.save_empty))
+        set_attr('skip_existing', bool(self.skip_existing))
+        set_attr('embedding_model_name', self._resolve_embedding_model_name())
 
     @classmethod
     def from_dict(
@@ -440,13 +445,13 @@ class ClassifierConfig:
             return "perch_8"
 
         # infer model name from embedding dimensions
-        logging.warning("Embedding model name not explicitly set in config. Inferring from beta shape.")
-        shape_map = {
-            1280: "perch_8",
-            1536: "perch_v2",
-            1024: "birdnet_v2.4"
+        logging.warning("Embedding model name not explicitly set in config. Inferring from embedding_dim.")
+        shape_map: Dict[Tuple[int, ...], str] = {
+            (1280,): "perch_8",
+            (1536,): "perch_v2",
+            (1024,): "birdnet_v2.4"
         }
-        return shape_map.get(self.beta.shape[0], None)
+        return shape_map.get(self.embedding_dim, None)
 
 
     def as_dict(self) -> Dict[str, Any]:
@@ -475,6 +480,7 @@ class ClassifierConfigList:
 
     def __post_init__(self) -> None:
         self.ensure_unique_classifier_names()
+        self.ensure_compatible_embedding_dims()
         self.ensure_compatible_embedding_model_names()
 
     @classmethod
@@ -557,9 +563,12 @@ class ClassifierConfigList:
             raise ValueError(f"Duplicate classifier_name values are not allowed: {duplicates_str}")
 
     def ensure_compatible_embedding_model_names(self) -> None:
-        """accesses a property that raises if there are multiple different
-          embedding_model_names across configs."""
+        """Accesses a property that raises if there are multiple different embedding model names."""
         _ = self.embedding_model_name
+
+    def ensure_compatible_embedding_dims(self) -> None:
+        """Accesses a property that raises if there are multiple embedding dims across configs."""
+        _ = self.embedding_dim
 
 
     @property
@@ -576,6 +585,19 @@ class ClassifierConfigList:
                 f"{', '.join(sorted(embedding_model_names))}"
             )
         return next(iter(embedding_model_names))
+
+    @property
+    def embedding_dim(self) -> Optional[Tuple[int, ...]]:
+        embedding_dims = {tuple(config.embedding_dim) for config in self.configs}
+        if not embedding_dims:
+            return None
+        elif len(embedding_dims) > 1:
+            dims_str = ', '.join(str(dim) for dim in sorted(embedding_dims))
+            raise ValueError(
+                "All classifier configs must have the same embedding_dim: "
+                f"{dims_str}"
+            )
+        return next(iter(embedding_dims))
 
     def as_list(self) -> List[Dict[str, Any]]:
         return [config.as_dict() for config in self.configs]

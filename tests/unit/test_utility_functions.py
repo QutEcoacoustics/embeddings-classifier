@@ -395,6 +395,16 @@ class TestUtilityFunctions:
 
         assert config.embedding_model_name is None
 
+    def test_classifier_config_sets_embedding_dim_tuple(self):
+        config = config_module.ClassifierConfig(
+            classifier_name='test_classifier',
+            classes=['a'],
+            beta=np.zeros((1536, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+
+        assert config.embedding_dim == (1536,)
+
     def test_classifier_config_list_embedding_model_name_returns_none_when_all_none(self):
         first = config_module.ClassifierConfig(
             classifier_name='first',
@@ -412,6 +422,41 @@ class TestUtilityFunctions:
         configs = config_module.ClassifierConfigList(configs=[first, second])
 
         assert configs.embedding_model_name is None
+
+    def test_classifier_config_list_embedding_dim_returns_unique_value(self):
+        first = config_module.ClassifierConfig(
+            classifier_name='first',
+            classes=['a'],
+            beta=np.zeros((1024, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+        second = config_module.ClassifierConfig(
+            classifier_name='second',
+            classes=['b'],
+            beta=np.zeros((1024, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+
+        configs = config_module.ClassifierConfigList(configs=[first, second])
+
+        assert configs.embedding_dim == (1024,)
+
+    def test_classifier_config_list_rejects_incompatible_embedding_dims(self):
+        first = config_module.ClassifierConfig(
+            classifier_name='first',
+            classes=['a'],
+            beta=np.zeros((1024, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+        second = config_module.ClassifierConfig(
+            classifier_name='second',
+            classes=['b'],
+            beta=np.zeros((1536, 1), dtype=np.float32),
+            beta_bias=np.zeros(1, dtype=np.float32),
+        )
+
+        with pytest.raises(ValueError, match='same embedding_dim'):
+            config_module.ClassifierConfigList(configs=[first, second])
 
     def test_classifier_config_embedding_model_name_perch_from_tfhub_v4(self):
         config = config_module.ClassifierConfig(
