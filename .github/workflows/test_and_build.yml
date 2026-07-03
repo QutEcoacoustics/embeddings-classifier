@@ -80,13 +80,13 @@ jobs:
           file: ./Dockerfile
           push: false
           load: true
-          tags: parquet-processor:latest
+          tags: crane-linear-model-runner:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Smoke test built image (no mounts)
         run: |
-          docker run --rm parquet-processor:latest version
+          docker run --rm crane-linear-model-runner:test version
       
       - name: "Unit Test in Docker container (fork PR: exclude auth integration)"
         if: "github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork"
@@ -95,7 +95,7 @@ jobs:
             --user $(id -u):$(id -g) \
             -v ${{ github.workspace }}/tests:/app/tests \
             --entrypoint python \
-            parquet-processor:latest \
+            crane-linear-model-runner:test \
             -m pytest tests/unit/ -v -m "not auth_integration"
 
       - name: "Unit Test in Docker container (trusted: include auth integration)"
@@ -106,9 +106,12 @@ jobs:
             -e BAW_AUTH_TOKEN="${{ secrets.BAW_AUTH_TOKEN }}" \
             -v ${{ github.workspace }}/tests:/app/tests \
             --entrypoint python \
-            parquet-processor:latest \
+            crane-linear-model-runner:test \
             -m pytest tests/unit/ -v
 
       - name: Integration Test from host
+        env:
+          # this tells the integration tests run from host to use the existing image built in the previous step, rather than building a new one.
+          DOCKER_TEST_USE_EXISTING_IMAGE: "true"
         run: |
           pytest -c pytest.host.ini -m docker tests/docker/test_docker_integration.py

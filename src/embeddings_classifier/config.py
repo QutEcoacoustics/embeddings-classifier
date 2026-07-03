@@ -6,7 +6,7 @@ import binascii
 import logging
 from pathlib import Path
 from typing import Dict, Any, Union, List, Iterator, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 
 import numpy as np
@@ -168,8 +168,7 @@ def _resolve_global_run_config_for_classifier(
 
 def resolve_classifier_name(config: Dict[str, Any], index: int, fail_on_missing: bool = False) -> str:
     """Resolve classifier name from canonical schema.
-       If the explicit 
-    ``classifier_name`` is missing, fallback naming is derived from classes/index.
+       If the explicit ``classifier_name`` is missing, fallback naming is derived from classes/index.
     """
     classifier = config['classifier']
 
@@ -281,6 +280,7 @@ class ClassifierConfig:
     beta: np.ndarray
     beta_bias: np.ndarray
     model_config: Optional[Dict[str, Any]] = None  # Optional additional model config
+    embedding_model_name: Optional[str] = field(init=False, default=None)
 
     # run params
     threshold: Any = 0.0
@@ -289,8 +289,12 @@ class ClassifierConfig:
     skip_existing: bool = True
 
     def __post_init__(self) -> None:
+        # this is a frozen dataclass, so we need to set properties this way. 
+        # we only do this once here during post-init, so it's safe to bypass the frozen restriction.
+        def set(name, val): object.__setattr__(self, name, val)
+
         # Keep classes as a concrete list for deterministic ordering and serialization.
-        object.__setattr__(self, 'classes', list(self.classes))
+        set('classes', list(self.classes))
 
         # Support both encoded (str) and already-materialized (ndarray/list) params.
         if isinstance(self.beta, str) or isinstance(self.beta_bias, str):
@@ -303,11 +307,11 @@ class ClassifierConfig:
                     'classes': self.classes,
                 }
             )
-            object.__setattr__(self, 'beta', beta)
-            object.__setattr__(self, 'beta_bias', beta_bias)
+            set('beta', beta)
+            set('beta_bias', beta_bias)
         else:
-            object.__setattr__(self, 'beta', np.asarray(self.beta, dtype=np.float32))
-            object.__setattr__(self, 'beta_bias', np.asarray(self.beta_bias, dtype=np.float32))
+            set('beta', np.asarray(self.beta, dtype=np.float32))
+            set('beta_bias', np.asarray(self.beta_bias, dtype=np.float32))
 
         if self.beta.ndim != 2:
             raise ValueError(f"beta must be a 2D array, got shape {self.beta.shape}")
@@ -319,7 +323,7 @@ class ClassifierConfig:
             )
 
         # Accept common bias layouts and canonicalize to 1D [num_classes].
-        object.__setattr__(self, 'beta_bias', np.asarray(self.beta_bias, dtype=np.float32).reshape(-1))
+        set('beta_bias', np.asarray(self.beta_bias, dtype=np.float32).reshape(-1))
         if self.beta_bias.shape[0] != len(self.classes):
             raise ValueError(
                 "beta_bias shape does not match classes: "
@@ -328,9 +332,9 @@ class ClassifierConfig:
 
         # Canonical per-class threshold array is computed once at normalization.
         if self.threshold_array is None:
-            object.__setattr__(self, 'threshold_array', build_threshold_array(self.classes, self.threshold))
+            set('threshold_array', build_threshold_array(self.classes, self.threshold))
         else:
-            object.__setattr__(self, 'threshold_array', np.asarray(self.threshold_array, dtype=np.float32))
+            set('threshold_array', np.asarray(self.threshold_array, dtype=np.float32))
 
         # At this point, threshold_array is guaranteed to be an ndarray (never None)
         assert isinstance(self.threshold_array, np.ndarray)
@@ -340,11 +344,12 @@ class ClassifierConfig:
                 f"expected {(len(self.classes),)}, got {self.threshold_array.shape}"
             )
 
-        object.__setattr__(self, 'classifier_name', str(self.classifier_name).strip())
+        set('classifier_name', str(self.classifier_name).strip())
         if not self.classifier_name:
             raise ValueError("classifier_name cannot be empty")
-        object.__setattr__(self, 'save_empty', bool(self.save_empty))
-        object.__setattr__(self, 'skip_existing', bool(self.skip_existing))
+        set('save_empty', bool(self.save_empty))
+        set('skip_existing', bool(self.skip_existing))
+        set('embedding_model_name', self._resolve_embedding_model_name())
 
     @classmethod
     def from_dict(
@@ -359,11 +364,11 @@ class ClassifierConfig:
         normalized_input = normalize_single_config_schema(config)
         classifier = normalized_input['classifier']
         required_fields = ['classes', 'beta', 'beta_bias']
-        for field in required_fields:
-            if field not in classifier:
-                raise ValueError(f"Classifier must contain '{field}' field")
-            if classifier[field] is None:
-                raise ValueError(f"Classifier field '{field}' cannot be null")
+        for required_field in required_fields:
+            if required_field not in classifier:
+                raise ValueError(f"Classifier must contain '{required_field}' field")
+            if classifier[required_field] is None:
+                raise ValueError(f"Classifier field '{required_field}' cannot be null")
 
         # Canonical classifier name is resolved once during normalization.
         classifier_name = resolve_classifier_name(normalized_input, index)
@@ -426,8 +431,7 @@ class ClassifierConfig:
 
         return cls.from_dict(config_data, index=index, run_config=run_config)
 
-    @property
-    def embedding_model_name(self) -> Optional[str]:
+    def _resolve_embedding_model_name(self) -> Optional[str]:
         model_config = self.model_config if isinstance(self.model_config, dict) else {}
 
         # perch model config schema
@@ -441,10 +445,9 @@ class ClassifierConfig:
             1280: "perch_8",
             1536: "perch_v2",
             1024: "birdnet_v2.4"
-
         }
         return shape_map.get(self.beta.shape[0], None)
-        
+
 
     def as_dict(self) -> Dict[str, Any]:
         return {
