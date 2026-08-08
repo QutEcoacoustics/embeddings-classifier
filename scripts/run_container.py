@@ -2,6 +2,7 @@ import argparse
 import sys
 import subprocess
 import threading
+import uuid
 from pathlib import Path
 from typing import Union, Tuple
 import shlex
@@ -161,8 +162,10 @@ def run_docker_container(
 
     # Construct the docker run command
     # Note: Using Path objects directly in f-strings converts them to strings.
+    container_name = f"embeddings-classifier-{uuid.uuid4().hex[:8]}"
     docker_command = [
         "docker", "run", "--rm", # --rm removes container after exit
+        "--name", container_name,
         "-v", f"{input_file_path}:{input_container_path}",
         "-v", f"{config_file_path}:{config_container_path}",
         "-v", f"{output_folder_path}:{output_container_path}"
@@ -179,7 +182,14 @@ def run_docker_container(
     if classify_args:
         docker_command.extend(classify_args)
 
-    stdout, stderr = sys_command(docker_command)
+    try:
+        stdout, stderr = sys_command(docker_command)
+    except Exception:
+        # Ensure the container is stopped if the CLI process was killed or interrupted.
+        # This is a no-op if the container has already exited.
+        print(f"Stopping container '{container_name}'...")
+        subprocess.run(["docker", "stop", container_name], capture_output=True, timeout=30)
+        raise
 
     print(f"Container stderr output:\n{stderr}")
     print(f"Container stdout output:\n{stdout}")
