@@ -53,7 +53,7 @@ def get_filelist(baw_filter, filelist_path, limit=-1):
     payload = {
         'filter': baw_filter,
         'projection': {
-            'include': ['id', 'site_id', 'sites.name', 'regions.id', 'regions.name', 'recorded_date']
+            'include': ['id', 'site_id', 'sites.name', 'regions.id', 'regions.name', 'recorded_date', 'duration_seconds']
         }
     }
 

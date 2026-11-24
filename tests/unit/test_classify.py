@@ -4,6 +4,7 @@ Test suite for the parquet processor main function using pytest.
 """
 
 import json
+import base64
 import os
 from pathlib import Path
 import re
@@ -12,6 +13,7 @@ from unittest.mock import patch, MagicMock
 from types import SimpleNamespace
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pyarrow.csv as pv
 
@@ -208,6 +210,28 @@ class TestClassifyFunction:
             app.classify(parquet_path, output_path, config_path)
         
         assert not os.path.exists(output_path)
+
+    def test_serialized_embedding_column_processing(self):
+        """Test decoding base64-encoded float32 embeddings from one column."""
+        embedding_dim = 1280
+        vectors = np.arange(2 * embedding_dim, dtype=np.float32).reshape(2, embedding_dim)
+        table = pa.table({
+            'source': ['source_a', 'source_b'],
+            'channel': [1, 1],
+            'offset': [0, 1],
+            'embedding': [base64.b64encode(vector.tobytes()).decode('ascii') for vector in vectors],
+        })
+        config = UnitTestHelpers.create_sample_config(
+            num_features=embedding_dim,
+            threshold=None,
+        )
+
+        items = app.classify_table(table, config)
+
+        assert len(items) == 1
+        assert items[0].success
+        assert items[0].result_table is not None
+        assert items[0].result_table.num_rows == 2
     
 
 

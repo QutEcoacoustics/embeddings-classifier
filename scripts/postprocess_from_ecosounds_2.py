@@ -232,11 +232,28 @@ def generate_missing_files_summary(filelist, results_files, output_file):
                 'date': item['recorded_date'][:10]  # Extract date part
             })
 
+    analyzed_duration_seconds = sum(
+        float(item['duration_seconds'])
+        for item in filelist
+        if int(item['id']) in existing_arids and item.get('duration_seconds') is not None
+    )
+
+    detections_by_species = collections.Counter()
+    if output_file.exists():
+        with output_file.open('r', encoding='utf-8', newline='') as combined_file:
+            for row in csv.DictReader(combined_file):
+                species = row.get('label')
+                if species:
+                    detections_by_species[species] += 1
+
     # Create missing files summary
     missing_summary = {
         "missing_results_total": sum(len(missing) for missing in missing_by_site.values()),
         "total_files": len(filelist),
         "completed_files": len(existing_arids),
+        "analyzed_duration_seconds": analyzed_duration_seconds,
+        "analyzed_duration_hours": analyzed_duration_seconds / 3600,
+        "detections_by_species": dict(sorted(detections_by_species.items())),
         "missing_results_summary": []
     }
 
@@ -288,6 +305,10 @@ def generate_missing_files_summary(filelist, results_files, output_file):
     
     print(f"Missing files summary saved to: {missing_summary_file}")
     print(f"Total missing results files: {missing_summary['missing_results_total']} of {missing_summary['total_files']}")
+    print(
+        f"Analyzed recording duration: {analyzed_duration_seconds:.2f} seconds "
+        f"({missing_summary['analyzed_duration_hours']:.2f} hours)"
+    )
 
     return missing_summary
 
@@ -354,9 +375,6 @@ def main(filelist, results_dir, output_file, limit=None, included_labels_arg=Non
     results_files = list(results_dir.rglob("*.csv"))
     output_file = Path(output_file)
     
-    # Generate missing files summary
-    generate_missing_files_summary(filelist, results_files, output_file)
-
     total_rows = 0
 
     # remove any existing output file
@@ -375,6 +393,9 @@ def main(filelist, results_dir, output_file, limit=None, included_labels_arg=Non
             print(f"Processed {i} of {len(results_files)} files, total rows: {total_rows}")
 
     print(f"Processed {len(results_files)} files, total rows: {total_rows}")
+
+    # Generate the summary after the consolidated CSV is available for species counts.
+    generate_missing_files_summary(filelist, results_files, output_file)
 
     aggregate_and_split_results(output_file, 
                                  output_file.with_name(output_file.stem + '_aggregated.csv'),

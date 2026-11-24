@@ -9,6 +9,7 @@ Uses pure PyArrow for maximum performance and minimal dependencies.
 
 import argparse
 import concurrent.futures
+import base64
 from collections import Counter, deque
 import json
 from importlib.metadata import PackageNotFoundError, version as get_distribution_version
@@ -248,13 +249,23 @@ def process_table(
         logging.info("Processing table: %s rows, %s columns", table.num_rows, table.num_columns)
 
         num_feature_cols = len(table.column_names) - len(metadata_columns)
+        feature_column_names = table.column_names[len(metadata_columns):len(metadata_columns)+num_feature_cols]
+        if num_feature_cols == 1:
+            serialized_embeddings = table.column(feature_column_names[0]).to_pylist()
+            features = np.vstack([
+                np.frombuffer(base64.b64decode(embedding), dtype=np.float32)
+                for embedding in serialized_embeddings
+            ])
+            num_feature_cols = features.shape[1]
+        else:
+            feature_arrays = [
+                table.column(col_name).to_numpy(zero_copy_only=False).astype(np.float32)
+                for col_name in feature_column_names
+            ]
+            features = np.column_stack(feature_arrays)
 
         if num_feature_cols != beta.shape[0]:
             raise ValueError(f"File has only {num_feature_cols} feature columns, classifier expects {beta.shape[0]} features")
-        
-        feature_column_names = table.column_names[len(metadata_columns):len(metadata_columns)+num_feature_cols]
-        feature_arrays = [table.column(col_name).to_numpy(zero_copy_only=False).astype(np.float32) for col_name in feature_column_names]
-        features = np.column_stack(feature_arrays)
         
         #TODO: figure out if beta_bias shape should be like (3,) (one dimensional) or (3,1) (two dimensional)
         # 1d is what we were using, but 2d means we can use a general decoder function

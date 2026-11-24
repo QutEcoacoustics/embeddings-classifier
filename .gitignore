@@ -180,6 +180,9 @@ cython_debug/
 
 local_files/*
 
+docs/results_explorer/local_server.py
+.vscode/settings.json
+
 
 tests/workspace/*
 tests/workspace/**/*

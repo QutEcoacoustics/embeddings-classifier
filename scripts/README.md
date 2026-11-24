@@ -27,3 +27,26 @@ Right click on the link and choose "save link as"
 
 Notes
 - In the command above, replace the placeholders with your real embeddings and output folder and classifier json file. The output folder is where the classifications files will get saved.
+
+## Combine recognizer config files
+
+To build one classifier config from multiple individual recognizer JSON files, create a manifest:
+
+```json
+{
+   "recognizer_paths": [
+      "/path/to/recognizer_one.json",
+      "/path/to/recognizer_two.json"
+   ]
+}
+```
+
+Then run:
+
+```bash
+python scripts/create_config_list.py \
+   --manifest /path/to/manifest.json \
+   --output /path/to/config_list.json
+```
+
+Use the generated `config_list.json` as the `config` value in the run parameters passed to `run_model_on_ecosounds_2.py`.
