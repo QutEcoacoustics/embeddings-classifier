@@ -1,6 +1,63 @@
+/*
+Classifier Results Explorer
+===========================
+
+This module owns the explorer's browser state and event wiring. It is loaded
+once by index.html; there is no framework and no server-side Python/R process
+in CSV selection, binning, or rendering.
+
+Data flow
+---------
+1. The #csv-file "change" handler near the bottom of this file calls
+   parseRows(). parseRows() uses d3.csvParse() and validates required fields;
+   groupRecords() then groups rows by label and sorts each group by score.    
+2. Data is always viewed one label at a time.
+   activateLabel() initializes/restores the label's controls, calls
+   renderTabs(), then calls renderHistogram().
+3. renderHistogram() calls updateStateFromControls() and buildBins() to split
+   the active label into bins for the visible range. It is called again by
+   refreshAfterViewChange() when range/bin controls change.
+4. SVG pointer and keyboard events call selectFromBin(). It maps vertical
+   position to an index in the bin's sorted rows, then calls
+   updateBinInspector() and renderSelectedRecord(). The bin slider and
+   Previous/Next buttons call selectBinRow() instead.
+5. renderSelectedRecord() creates the oe-spectrogram markup and calls
+   loadAudio(). loadAudio() uses authorizationHeaders(), fetches the WAV,
+   creates a temporary blob URL, and assigns it to the component's src.
+
+Module-level state
+------------------
+recordsByLabel: Map<label, row[]> containing all valid, score-sorted rows.
+orderedLabels: Stable list of labels used to build the tab controls.
+activeLabel: Label currently represented by the histogram.
+viewStateByLabel: Min/max score range and bin count retained per label.
+selectedBin / selectedRow: Current interactive selection.
+activeAudioObjectUrl: Current blob URL, revoked before replacement/unload.
+AUTH_TOKEN_STORAGE_KEY: Local-storage key for the EcoSounds API token.
+
+Event entry points
+------------------
+- #csv-file: validates and loads a CSV (50 MB limit).
+- Label tabs: switch activeLabel and restore its independent view state.
+- Dual range inputs: update the visible score range and redraw.
+- #bin-count / #reset-view: rebuild the histogram.
+- SVG bin targets: select a score-sorted row by vertical click position.
+- Bin slider / Previous / Next: navigate rows within the selected bin.
+- Token field / Test token: persist, validate, or clear authentication.
+- Clear: reset all in-memory CSV and selection state.
+
+External resources
+------------------
+- d3-dsv parses CSV only; the chart itself is native SVG/JavaScript.
+- oe-spectrogram renders the selected audio after an authenticated fetch.
+- EcoSounds supplies media and listen pages; the URLs are constructed from
+  audio_recording_id, start_offset_seconds, and end_offset_seconds.
+*/
+
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3-dsv@3/+esm";
 
-const MAX_FILE_BYTES = 15 * 1024 * 1024;
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_FILE_MB = MAX_FILE_BYTES / 1024 / 1024;
 const REQUIRED_COLUMNS = [
   "label",
   "score",
@@ -18,20 +75,31 @@ const loadStatus = document.querySelector("#load-status");
 const explorer = document.querySelector("#explorer");
 const tabs = document.querySelector("#tabs");
 const labelTitle = document.querySelector("#label-title");
-const viewMin = document.querySelector("#view-min");
-const viewMax = document.querySelector("#view-max");
+const viewMinRange = document.querySelector("#view-min-range");
+const viewMaxRange = document.querySelector("#view-max-range");
+const dualRangeSelection = document.querySelector("#dual-range-selection");
 const binCount = document.querySelector("#bin-count");
-const selectedScore = document.querySelector("#selected-score");
 const resetView = document.querySelector("#reset-view");
 const histogram = document.querySelector("#histogram");
 const histogramEmpty = document.querySelector("#histogram-empty");
+const histogramTooltip = document.querySelector("#histogram-tooltip");
 const recordDetails = document.querySelector("#record-details");
+const binInspector = document.querySelector("#bin-inspector");
+const selectedBinRange = document.querySelector("#selected-bin-range");
+const selectedBinCount = document.querySelector("#selected-bin-count");
+const selectedBinPosition = document.querySelector("#selected-bin-position");
+const binRowSlider = document.querySelector("#bin-row-slider");
+const previousBinRow = document.querySelector("#previous-bin-row");
+const nextBinRow = document.querySelector("#next-bin-row");
+const selectedBinScore = document.querySelector("#selected-bin-score");
 
 let recordsByLabel = new Map();
 let orderedLabels = [];
 let activeLabel = "";
 let viewStateByLabel = new Map();
 let selectedBinIndex = null;
+let selectedBin = null;
+let selectedBinRowIndex = 0;
 let selectedRow = null;
 let activeAudioObjectUrl = null;
 const AUTH_TOKEN_STORAGE_KEY = "ecosounds-api-token";
@@ -97,12 +165,11 @@ function resetExplorer() {
   orderedLabels = [];
   activeLabel = "";
   viewStateByLabel = new Map();
-  selectedBinIndex = null;
-  selectedRow = null;
+  clearBinSelection();
   explorer.hidden = true;
   tabs.replaceChildren();
   histogram.replaceChildren();
-  selectedScore.value = "";
+  clearBinSelection();
   recordDetails.innerHTML =
     '<p class="status">Select a histogram bin to display a recording.</p>';
   clearButton.disabled = true;
@@ -192,12 +259,17 @@ function renderTabs() {
 
 function activateLabel(label) {
   activeLabel = label;
-  selectedBinIndex = null;
-  selectedRow = null;
-  selectedScore.value = "";
+  clearBinSelection();
   const state = viewStateByLabel.get(label);
-  viewMin.value = state.minimum;
-  viewMax.value = state.maximum;
+  const extent = labelExtent(recordsByLabel.get(label));
+  for (const control of [viewMinRange, viewMaxRange]) {
+    control.min = extent.minimum;
+    control.max = extent.maximum;
+    control.step = "any";
+  }
+  viewMinRange.value = state.minimum;
+  viewMaxRange.value = state.maximum;
+  updateDualRange();
   binCount.value = state.binCount;
   labelTitle.textContent = `Score distribution — ${label}`;
   renderTabs();
@@ -207,15 +279,21 @@ function activateLabel(label) {
 
 function updateStateFromControls() {
   const state = getActiveState();
-  const minimum = finiteNumber(viewMin.value);
-  const maximum = finiteNumber(viewMax.value);
+  const minimum = finiteNumber(viewMinRange.value);
+  const maximum = finiteNumber(viewMaxRange.value);
   const bins = Number.parseInt(binCount.value, 10);
 
   if (minimum === null || maximum === null) {
     throw new Error("Minimum and maximum scores must be numbers.");
   }
-  if (minimum >= maximum) {
-    throw new Error("Maximum shown score must be greater than minimum.");
+  const extent = labelExtent(recordsByLabel.get(activeLabel));
+  if (
+    minimum > maximum ||
+    (minimum === maximum && extent.minimum !== extent.maximum)
+  ) {
+    throw new Error(
+      "Maximum shown score must be greater than minimum shown score.",
+    );
   }
   if (!Number.isInteger(bins) || bins < 2 || bins > 200) {
     throw new Error("Histogram bins must be an integer from 2 to 200.");
@@ -224,6 +302,48 @@ function updateStateFromControls() {
   state.minimum = minimum;
   state.maximum = maximum;
   state.binCount = bins;
+}
+
+function syncVisibleRangeFromInputs(source) {
+  const extent = labelExtent(recordsByLabel.get(activeLabel));
+  let minimum = Math.max(extent.minimum, Number(viewMinRange.value));
+  let maximum = Math.min(extent.maximum, Number(viewMaxRange.value));
+
+  if (minimum >= maximum) {
+    if (source === viewMinRange) {
+      minimum = Math.max(extent.minimum, maximum - Math.abs(maximum || 1) * 0.001);
+    } else {
+      maximum = Math.min(extent.maximum, minimum + Math.abs(minimum || 1) * 0.001);
+    }
+  }
+
+  viewMinRange.value = minimum;
+  viewMaxRange.value = maximum;
+  updateDualRange();
+}
+
+function syncVisibleRangeFromSlider(source) {
+  syncVisibleRangeFromInputs(source);
+}
+
+function updateDualRange() {
+  const extent = labelExtent(recordsByLabel.get(activeLabel));
+  const width = extent.maximum - extent.minimum;
+  const minimumFraction =
+    width === 0 ? 0 : (Number(viewMinRange.value) - extent.minimum) / width;
+  const maximumFraction =
+    width === 0 ? 1 : (Number(viewMaxRange.value) - extent.minimum) / width;
+  dualRangeSelection.style.left = `${minimumFraction * 100}%`;
+  dualRangeSelection.style.right = `${(1 - maximumFraction) * 100}%`;
+}
+
+function clearBinSelection() {
+  selectedBinIndex = null;
+  selectedBin = null;
+  selectedBinRowIndex = 0;
+  selectedRow = null;
+  binInspector.hidden = true;
+  histogramTooltip.hidden = true;
 }
 
 function buildBins(records, minimum, maximum, binCountValue) {
@@ -276,16 +396,21 @@ function renderHistogram() {
   }
 
   const state = getActiveState();
+  const plotMinimum = state.minimum;
+  const plotMaximum =
+    state.maximum === state.minimum
+      ? state.maximum + Math.max(Math.abs(state.maximum) * 0.01, 0.01)
+      : state.maximum;
   const records = recordsByLabel.get(activeLabel);
   const bins = buildBins(
     records,
-    state.minimum,
-    state.maximum,
+    plotMinimum,
+    plotMaximum,
     state.binCount,
   );
   const width = 1000;
   const height = 420;
-  const margin = { top: 24, right: 24, bottom: 52, left: 68 };
+  const margin = { top: 58, right: 24, bottom: 52, left: 68 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const plotBottom = margin.top + plotHeight;
@@ -322,7 +447,7 @@ function renderHistogram() {
     const fraction = tickIndex / 5;
     const x = margin.left + fraction * plotWidth;
     const score =
-      state.minimum + fraction * (state.maximum - state.minimum);
+      plotMinimum + fraction * (plotMaximum - plotMinimum);
     const label = svgElement("text", {
       x,
       y: plotBottom + 25,
@@ -356,6 +481,18 @@ function renderHistogram() {
     }
     const x = margin.left + bin.index * stepX;
     const barHeight = (bin.rows.length / maximumCount) * plotHeight;
+    const hitTarget = svgElement("rect", {
+      x,
+      y: margin.top,
+      width: stepX,
+      height: plotHeight,
+      class: "bin-target",
+      tabindex: "0",
+      role: "button",
+      "aria-label":
+        `${bin.rows.length} rows from ${formatScore(bin.minimum)} ` +
+        `to ${formatScore(bin.maximum)}`,
+    });
     const rect = svgElement("rect", {
       x: x + Math.max(0.5, stepX * 0.04),
       y: plotBottom - barHeight,
@@ -368,15 +505,36 @@ function renderHistogram() {
         `${bin.rows.length} rows from ${formatScore(bin.minimum)} ` +
         `to ${formatScore(bin.maximum)}`,
     });
-    rect.addEventListener("pointerdown", (event) => {
+    const handlePointerDown = (event) => {
       selectFromBin(event, bin, barHeight, plotBottom);
-    });
-    rect.addEventListener("keydown", (event) => {
+    };
+    const handlePointerMove = (event) => {
+      const chartBounds = histogram.getBoundingClientRect();
+      histogramTooltip.textContent =
+        `${bin.rows.length.toLocaleString()} examples · ` +
+        `${formatScore(bin.minimum)}–${formatScore(bin.maximum)}`;
+      histogramTooltip.style.left =
+        `${event.clientX - chartBounds.left}px`;
+      histogramTooltip.style.top =
+        `${Math.max(34, event.clientY - chartBounds.top - 10)}px`;
+      histogramTooltip.hidden = false;
+    };
+    const handlePointerLeave = () => {
+      histogramTooltip.hidden = true;
+    };
+    const handleKeyDown = (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         selectFromBin(event, bin, barHeight, plotBottom, 0.5);
       }
-    });
+    };
+    for (const target of [hitTarget, rect]) {
+      target.addEventListener("pointerdown", handlePointerDown);
+      target.addEventListener("pointermove", handlePointerMove);
+      target.addEventListener("pointerleave", handlePointerLeave);
+      target.addEventListener("keydown", handleKeyDown);
+    }
+    histogram.append(hitTarget);
     histogram.append(rect);
   });
 
@@ -418,9 +576,47 @@ function selectFromBin(
     Math.floor(verticalFraction * bin.rows.length),
   );
   selectedBinIndex = bin.index;
+  selectedBin = bin;
+  selectedBinRowIndex = rowIndex;
   selectedRow = bin.rows[rowIndex];
-  selectedScore.value = formatScore(selectedRow.score);
   renderHistogram();
+  updateBinInspector();
+  renderSelectedRecord(selectedRow);
+}
+
+function updateBinInspector() {
+  if (selectedBin === null || selectedBin.rows.length === 0) {
+    clearBinSelection();
+    return;
+  }
+
+  binInspector.hidden = false;
+  selectedBinRange.textContent =
+    `${formatScore(selectedBin.minimum)} to ${formatScore(selectedBin.maximum)}`;
+  selectedBinCount.textContent =
+    `${selectedBin.rows.length.toLocaleString()} example(s) in bin`;
+  binRowSlider.max = String(selectedBin.rows.length - 1);
+  binRowSlider.value = String(selectedBinRowIndex);
+  selectedBinPosition.textContent =
+    `(${selectedBinRowIndex + 1} of ${selectedBin.rows.length})`;
+  selectedBinScore.value = formatScore(
+    selectedBin.rows[selectedBinRowIndex].score,
+  );
+  previousBinRow.disabled = selectedBinRowIndex === 0;
+  nextBinRow.disabled =
+    selectedBinRowIndex === selectedBin.rows.length - 1;
+}
+
+function selectBinRow(rowIndex) {
+  if (selectedBin === null) {
+    return;
+  }
+  selectedBinRowIndex = Math.max(
+    0,
+    Math.min(selectedBin.rows.length - 1, Number(rowIndex)),
+  );
+  selectedRow = selectedBin.rows[selectedBinRowIndex];
+  updateBinInspector();
   renderSelectedRecord(selectedRow);
 }
 
@@ -589,7 +785,7 @@ fileInput.addEventListener("change", async () => {
     setStatus(
       `This file is ${(file.size / 1024 / 1024).toFixed(
         1,
-      )} MB. The explorer limit is 15 MB.`,
+      )} MB. The explorer limit is ${MAX_FILE_MB} MB.`,
       true,
     );
     return;
@@ -612,11 +808,7 @@ fileInput.addEventListener("change", async () => {
       const extent = labelExtent(recordsByLabel.get(label));
       viewStateByLabel.set(label, {
         minimum: extent.minimum,
-        maximum:
-          extent.maximum === extent.minimum
-            ? extent.maximum +
-              Math.max(Math.abs(extent.maximum) * 0.01, 0.01)
-            : extent.maximum,
+        maximum: extent.maximum,
         binCount: 40,
       });
     }
@@ -648,33 +840,44 @@ fileInput.addEventListener("change", async () => {
 
 clearButton.addEventListener("click", () => {
   resetExplorer();
-  setStatus("Choose a CSV up to 15 MB.");
+  setStatus(`Choose a CSV up to ${MAX_FILE_MB} MB.`);
 });
 
-for (const control of [viewMin, viewMax, binCount]) {
-  control.addEventListener("change", () => {
-    selectedBinIndex = null;
-    selectedRow = null;
-    selectedScore.value = "";
-    renderHistogram();
-    showWaitingForSelection();
-  });
+function refreshAfterViewChange() {
+  clearBinSelection();
+  renderHistogram();
+  showWaitingForSelection();
 }
+
+binCount.addEventListener("change", refreshAfterViewChange);
+
+viewMinRange.addEventListener("input", (event) => {
+  syncVisibleRangeFromSlider(event.currentTarget);
+  refreshAfterViewChange();
+});
+viewMaxRange.addEventListener("input", (event) => {
+  syncVisibleRangeFromSlider(event.currentTarget);
+  refreshAfterViewChange();
+});
 
 resetView.addEventListener("click", () => {
   const extent = labelExtent(recordsByLabel.get(activeLabel));
   const state = getActiveState();
   state.minimum = extent.minimum;
-  state.maximum =
-    extent.maximum === extent.minimum
-      ? extent.maximum + Math.max(Math.abs(extent.maximum) * 0.01, 0.01)
-      : extent.maximum;
-  viewMin.value = state.minimum;
-  viewMax.value = state.maximum;
-  selectedBinIndex = null;
-  selectedScore.value = "";
-  renderHistogram();
-  showWaitingForSelection();
+  state.maximum = extent.maximum;
+  viewMinRange.value = state.minimum;
+  viewMaxRange.value = state.maximum;
+  refreshAfterViewChange();
+});
+
+binRowSlider.addEventListener("input", () => {
+  selectBinRow(Number(binRowSlider.value));
+});
+previousBinRow.addEventListener("click", () => {
+  selectBinRow(selectedBinRowIndex - 1);
+});
+nextBinRow.addEventListener("click", () => {
+  selectBinRow(selectedBinRowIndex + 1);
 });
 
 authTokenInput.addEventListener("change", () => {

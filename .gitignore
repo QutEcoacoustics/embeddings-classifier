@@ -180,8 +180,8 @@ cython_debug/
 
 local_files/*
 
-docs/results_explorer/local_server.py
 .vscode/settings.json
+.Rhistory
 
 
 tests/workspace/*

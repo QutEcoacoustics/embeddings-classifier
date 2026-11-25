@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Explore classifier result rows by label, score, and spectrogram."
+    />
+    <title>Classifier results explorer</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script
+      type="module"
+      src="https://cdn.jsdelivr.net/npm/@ecoacoustics/web-components/dist/components.js"
+    ></script>
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <header>
+      <div class="header-title">
+        <h1>Classifier results explorer</h1>
+      </div>
+      <div class="header-controls">
+        <label>
+          Results CSV
+          <input id="csv-file" type="file" accept=".csv,text/csv" />
+        </label>
+        <label>
+          EcoSounds API token
+          <input
+            id="auth-token"
+            type="password"
+            autocomplete="off"
+            placeholder="Required for private projects"
+          />
+        </label>
+        <button id="test-auth-token" class="secondary" type="button">
+          Test token
+        </button>
+        <button id="clear" class="secondary" type="button" disabled>
+          Clear
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="status-panel">
+        <p id="auth-status" class="status">
+          The token is saved only in this browser's local storage.
+        </p>
+        <p id="load-status" class="status">Choose a CSV up to 50 MB.</p>
+      </section>
+
+      <section id="explorer" hidden>
+        <div id="tabs" class="tabs" role="tablist"></div>
+
+        <div class="workspace">
+          <section class="panel">
+            <h2 id="label-title">Score distribution</h2>
+            <div class="chart-actions">
+              <button id="reset-view" class="secondary" type="button">
+                Reset view
+              </button>
+            </div>
+            <div class="dual-range">
+              <div class="dual-range-track">
+                <div id="dual-range-selection" class="dual-range-selection"></div>
+                <input
+                  id="view-min-range"
+                  type="range"
+                  aria-label="Minimum shown score"
+                />
+                <input
+                  id="view-max-range"
+                  type="range"
+                  aria-label="Maximum shown score"
+                />
+              </div>
+            </div>
+            <div class="chart-wrap">
+              <svg
+                id="histogram"
+                role="img"
+                aria-label="Score histogram"
+                preserveAspectRatio="none"
+              ></svg>
+              <div id="histogram-empty" class="histogram-empty" hidden>
+                No scores in the visible range.
+              </div>
+              <div id="histogram-tooltip" class="histogram-tooltip" hidden></div>
+            </div>
+            <div class="chart-footer">
+              <span class="hint">Click to select a bin</span>
+              <label>
+                Histogram bins
+                <input
+                  id="bin-count"
+                  type="number"
+                  min="2"
+                  max="200"
+                  step="1"
+                  value="40"
+                />
+              </label>
+            </div>
+          </section>
+
+          <aside class="panel">
+            <section id="bin-inspector" class="bin-inspector" hidden>
+              <div class="bin-summary">
+                <h2>Selected bin</h2>
+                <strong>Range:</strong>
+                <span id="selected-bin-range"></span>
+                <span id="selected-bin-count"></span>
+              </div>
+              <div class="bin-navigation">
+                <button id="previous-bin-row" class="secondary" type="button">
+                  Previous
+                </button>
+                <label class="bin-slider-label">
+                  <span>
+                    Selected example <span id="selected-bin-position"></span>
+                  </span>
+                  <input id="bin-row-slider" type="range" min="0" max="0" />
+                </label>
+                <output id="selected-bin-score"></output>
+                <button id="next-bin-row" class="secondary" type="button">
+                  Next
+                </button>
+              </div>
+            </section>
+            <div id="record-details" class="record-details">
+              <p class="status">
+                Select a histogram bin to display a recording.
+              </p>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
