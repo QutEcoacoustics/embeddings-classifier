@@ -182,6 +182,7 @@ local_files/*
 
 .vscode/settings.json
 .Rhistory
+.RData
 
 
 tests/workspace/*

@@ -2,8 +2,8 @@ Package: resultsExplorer
 Title: Interactive Classifier Results Explorer
 Version: 0.1.0
 Authors@R:
-    person("QUT Ecoacoustics", role = c("aut", "cre"),
-           email = "ecosounds@qut.edu.au")
+    person("Philip Eichinski", role = c("aut", "cre"),
+           email = "philip.eichinski@qut.edu.au")
 Description: Opens a local browser-based explorer for manually reviewing
     classifier results by label and score.
 License: MIT + file LICENSE

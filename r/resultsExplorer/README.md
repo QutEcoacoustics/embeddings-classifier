@@ -4,9 +4,7 @@ Install from the monorepo subdirectory:
 
 ```r
 install.packages("remotes")
-remotes::install_github(
-  "QutEcoacoustics/embeddings-classifier/r/resultsExplorer"
-)
+remotes::install_github("QutEcoacoustics/embeddings-classifier/r/resultsExplorer")
 ```
 
 Launch it:
